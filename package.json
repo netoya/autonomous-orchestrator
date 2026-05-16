@@ -1,0 +1,44 @@
+{
+  "name": "autonomous-orchestrator",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "SoftwareFactory autonomous orchestrator — script-first workflow engine with waiters",
+  "main": "dist/dispatcher.js",
+  "bin": {
+    "orchestrator": "./bin/orchestrator.mjs"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/dispatcher.ts",
+    "start": "node dist/dispatcher.js",
+    "migrate": "tsx src/cli/migrate.ts up",
+    "migrate:status": "tsx src/cli/migrate.ts status",
+    "migrate:reset": "tsx src/cli/migrate.ts reset",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "keywords": [
+    "workflow",
+    "orchestrator",
+    "autonomous",
+    "waiters"
+  ],
+  "author": "SoftwareFactory",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11",
+    "ulid": "^2.3",
+    "zod": "^3.23"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7",
+    "@types/node": "^20",
+    "tsx": "^4.19",
+    "typescript": "^5.5",
+    "vitest": "^2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
