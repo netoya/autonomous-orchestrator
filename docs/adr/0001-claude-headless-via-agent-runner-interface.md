@@ -237,5 +237,21 @@ Cada `execution` puede tener `0..1` conversacion asociada. El `agent_session_id`
 
 ---
 
+## Nota de implementacion — OAuth heredado (2026-05-16)
+
+Durante la implementacion del MVP esqueleto, Angel decidio NO usar `--bare` + `ANTHROPIC_API_KEY` como propone la spec 3.2.2, sino heredar la autenticacion OAuth del keychain del usuario via `claude -p` sin flags adicionales.
+
+**Razon**: el equipo ya tiene Claude autenticado via OAuth en sus maquinas. Usar `--bare` + API key forzaria gestionar secretos adicionales con sops + age, lo cual agrega complejidad operacional innecesaria para el MVP.
+
+**Implementacion**: `ClaudeCodeRunner` invoca `claude -p <prompt> --output-format json --permission-mode <mode> ...` SIN `--bare`. Hereda la sesion autenticada del usuario.
+
+**Trade-offs**:
+- Pro: sin gestion de secretos en MVP, arranque mas rapido.
+- Contra: cada desarrollador debe tener su propia suscripcion Claude activa. No portable a CI/CD sin ajustes.
+
+**Path forward**: cuando se necesite CI/CD o deploy multi-usuario, se agregara soporte para `ANTHROPIC_API_KEY` como fallback. La interfaz `AgentRunner` sigue siendo la misma.
+
+---
+
 **Firmado**: Roman (Tech Lead), 2026-05-16  
 **Revision**: Equipo completo (acta 2026-05-16-agentrunner-interface-claude-headless.md)
