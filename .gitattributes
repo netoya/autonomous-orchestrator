@@ -1,0 +1,36 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Shell scripts must use LF (critical for waiters Bash)
+*.sh text eol=lf
+
+# SQL migrations must use LF
+*.sql text eol=lf
+
+# JavaScript / TypeScript
+*.js text eol=lf
+*.ts text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+
+# YAML / Config
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Markdown
+*.md text eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.db binary
+*.sqlite binary
+*.db-wal binary
+*.db-shm binary
+
+# Linguist overrides — exclude state and meetings from language stats
+state/** linguist-vendored
+docs/meetings/** linguist-documentation
