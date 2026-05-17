@@ -1,6 +1,7 @@
 // ClaudeCodeRunner — implementacion real de AgentRunner via `claude -p` headless.
 // IMPORTANTE: NO usa `--bare` para heredar OAuth del keychain del usuario (decision de Angel).
 // Rechaza `dangerously-skip-permissions` en todos los parametros (spec 3.2.8).
+// Alineado con docs/claude-headless.md.
 
 import { spawn } from 'node:child_process';
 import type { AgentRunner, AgentRunParams, AgentRunResult } from './types.js';
@@ -17,6 +18,7 @@ export class ClaudeCodeRunner implements AgentRunner {
     const checkFields = [
       params.permissionMode ?? '',
       (params.allowedTools ?? []).join(','),
+      (params.disallowedTools ?? []).join(','),
       params.appendSystemPrompt ?? '',
       params.prompt,
     ];
@@ -32,11 +34,21 @@ export class ClaudeCodeRunner implements AgentRunner {
       }
     }
 
+    const outputFormat = params.outputFormat ?? 'json';
+
     // Construir args para `claude`
     const args: string[] = ['-p', params.prompt];
 
-    // Output format (default: json)
-    args.push('--output-format', params.outputFormat ?? 'json');
+    args.push('--output-format', outputFormat);
+
+    if (params.inputFormat) {
+      args.push('--input-format', params.inputFormat);
+    }
+
+    // stream-json requiere --verbose (docs/claude-headless.md L102).
+    if (outputFormat === 'stream-json') {
+      args.push('--verbose');
+    }
 
     // IMPORTANTE: NO incluir --bare (decision de Angel para heredar OAuth)
     // La spec 3.2.2 propone --bare + ANTHROPIC_API_KEY, pero Angel quiere OAuth heredado.
@@ -46,15 +58,22 @@ export class ClaudeCodeRunner implements AgentRunner {
     }
 
     if (params.allowedTools && params.allowedTools.length > 0) {
-      // La flag correcta es --allowed-tools (no --allowedTools en camelCase)
-      args.push('--allowed-tools', params.allowedTools.join(','));
+      // El CLI acepta tanto --allowedTools como --allowed-tools; usamos la forma camelCase
+      // que aparece en docs/claude-headless.md.
+      args.push('--allowedTools', params.allowedTools.join(','));
+    }
+
+    if (params.disallowedTools && params.disallowedTools.length > 0) {
+      args.push('--disallowedTools', params.disallowedTools.join(','));
     }
 
     if (params.maxTurns) {
       args.push('--max-turns', String(params.maxTurns));
     }
 
-    if (params.sessionId) {
+    if (params.continueLast) {
+      args.push('--continue');
+    } else if (params.sessionId) {
       args.push('--resume', params.sessionId);
     }
 
@@ -73,12 +92,17 @@ export class ClaudeCodeRunner implements AgentRunner {
     }
 
     // Spawn claude
+    // stdio: 'ignore' en stdin para que claude -p no espere input por pipe (sin esto se cuelga).
     return new Promise<AgentRunResult>((resolve) => {
       const proc = spawn('claude', args, {
         cwd: params.cwd,
         env: { ...process.env, ...params.env },
         timeout: params.timeoutMs ?? 600_000, // 10 min default
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
+
+      // FIX #3: Capturar PID para cleanup
+      const childPid = proc.pid;
 
       let stdout = '';
       let stderr = '';
@@ -97,32 +121,131 @@ export class ClaudeCodeRunner implements AgentRunner {
           sessionId: '',
           output: '',
           error: `spawn-error: ${err.message}`,
+          childPid,
         });
       });
 
       proc.on('close', (exitCode) => {
-        if (exitCode !== 0) {
+        // FIX #1 (P0): Parsear stdout JSON PRIMERO, DESPUES validar exit code.
+        // Razon: claude CLI puede salir con exit 1 (ej: max_turns_reached)
+        // pero haber escrito JSON valido con is_error=false. Confiamos en el JSON.
+
+        if (outputFormat === 'text') {
+          // Para text mode, confiar solo en exit code (no hay JSON para validar)
+          if (exitCode !== 0) {
+            resolve({
+              success: false,
+              sessionId: '',
+              output: '',
+              error: stderr || `claude-exit-${exitCode}`,
+              childPid,
+            });
+            return;
+          }
+
           resolve({
-            success: false,
+            success: true,
             sessionId: '',
-            output: '',
-            error: stderr || `claude-exit-${exitCode}`,
+            output: stdout,
+            childPid,
           });
           return;
         }
 
-        // Parsear JSON de stdout
+        if (outputFormat === 'stream-json') {
+          // Parsear JSONL: ultima linea con type=result tiene los totales.
+          const lines = stdout.split('\n').filter((l) => l.trim().length > 0);
+          let resultLine: Record<string, unknown> | null = null;
+          for (let i = lines.length - 1; i >= 0; i--) {
+            const line = lines[i];
+            if (!line) continue;
+            try {
+              const parsed = JSON.parse(line) as Record<string, unknown>;
+              if (parsed.type === 'result') {
+                resultLine = parsed;
+                break;
+              }
+            } catch {
+              // ignorar lineas no-json
+            }
+          }
+
+          if (!resultLine) {
+            // No pudimos parsear resultado — confiar en exit code
+            if (exitCode !== 0) {
+              resolve({
+                success: false,
+                sessionId: '',
+                output: stdout,
+                error: stderr || `claude-exit-${exitCode}`,
+                rawJson: stdout,
+                childPid,
+              });
+              return;
+            }
+
+            resolve({
+              success: false,
+              sessionId: '',
+              output: stdout,
+              error: 'no-result-event-in-stream',
+              rawJson: stdout,
+              childPid,
+            });
+            return;
+          }
+
+          // JSON valido parseado — confiar en is_error del JSON
+          const usage = resultLine.usage as
+            | { input_tokens?: number; output_tokens?: number }
+            | undefined;
+
+          const jsonSuccess = resultLine.is_error !== true;
+
+          // Si el JSON reporta success PERO exit code != 0, loguear warning
+          if (jsonSuccess && exitCode !== 0) {
+            console.warn(
+              `[claude-runner] WARN: claude reported is_error=false but exited with code ${exitCode}. Trusting JSON output.`,
+            );
+          }
+
+          resolve({
+            success: jsonSuccess,
+            sessionId: (resultLine.session_id as string) ?? '',
+            output: (resultLine.result as string) ?? '',
+            cost: resultLine.total_cost_usd as number | undefined,
+            numTurns: resultLine.num_turns as number | undefined,
+            tokensInput: usage?.input_tokens ?? 0,
+            tokensOutput: usage?.output_tokens ?? 0,
+            rawJson: resultLine,
+            error: resultLine.is_error === true ? 'claude-reported-error' : undefined,
+            childPid,
+          });
+          return;
+        }
+
+        // outputFormat === 'json'
         try {
           const raw = JSON.parse(stdout) as {
             session_id?: string;
             result?: string;
             total_cost_usd?: number;
             num_turns?: number;
+            is_error?: boolean;
             usage?: { input_tokens?: number; output_tokens?: number };
           };
 
+          const jsonSuccess = raw.is_error !== true;
+
+          // Si el JSON reporta success PERO exit code != 0, loguear warning
+          if (jsonSuccess && exitCode !== 0) {
+            console.warn(
+              `[claude-runner] WARN: claude reported is_error=false but exited with code ${exitCode}. Trusting JSON output.`,
+            );
+          }
+
           resolve({
-            success: true,
+            success: jsonSuccess,
             sessionId: raw.session_id ?? '',
             output: raw.result ?? '',
             cost: raw.total_cost_usd,
@@ -130,14 +253,31 @@ export class ClaudeCodeRunner implements AgentRunner {
             tokensInput: raw.usage?.input_tokens ?? 0,
             tokensOutput: raw.usage?.output_tokens ?? 0,
             rawJson: raw,
+            error: raw.is_error === true ? 'claude-reported-error' : undefined,
+            childPid,
           });
         } catch (err) {
+          // JSON invalido — confiar en exit code
+          if (exitCode !== 0) {
+            resolve({
+              success: false,
+              sessionId: '',
+              output: '',
+              error: stderr || `claude-exit-${exitCode}`,
+              rawJson: stdout,
+              childPid,
+            });
+            return;
+          }
+
+          // Exit code 0 pero JSON invalido — error
           resolve({
             success: false,
             sessionId: '',
             output: '',
             error: 'invalid-json-from-claude',
             rawJson: stdout,
+            childPid,
           });
         }
       });

@@ -4,7 +4,6 @@
 import { openDb } from '../db/connection.js';
 import { fulfillWaiter, type WaiterRow } from '../db/dao/waiters.js';
 import { now } from '../lib/clock.js';
-import { insertEvent } from '../db/dao/events.js';
 
 export default async function waiter(args: string[]): Promise<void> {
   const subcommand = args[0];
@@ -97,16 +96,8 @@ async function waiterFulfill(args: string[]): Promise<void> {
   const db = openDb();
   const timestamp = now();
 
-  // Fulfill waiter
+  // Fulfill waiter (emite evento waiter.fulfilled en transaccion atomica)
   fulfillWaiter(db, waiterId, valueJson, 'cli-operator', timestamp);
-
-  // Emitir evento waiter.fulfilled
-  insertEvent(
-    db,
-    'waiter.fulfilled',
-    { waiter_id: waiterId, value: JSON.parse(valueJson) },
-    timestamp,
-  );
 
   console.log(`Waiter ${waiterId} fulfilled`);
 

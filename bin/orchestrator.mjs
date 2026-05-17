@@ -16,12 +16,13 @@ if (!command) {
   console.error('Usage: orchestrator <command> [args]');
   console.error('');
   console.error('Commands:');
-  console.error('  status              Show system status');
-  console.error('  flow create <name>  Create a new flow');
-  console.error('  task list           List tasks');
-  console.error('  waiter list         List waiters');
+  console.error('  status                    Show system status');
+  console.error('  flow create <name>        Create a new flow');
+  console.error('  coordinate "<idea>"       Create flow + coordinator task');
+  console.error('  task list                 List tasks');
+  console.error('  waiter list               List waiters');
   console.error('  waiter fulfill <id> --json <json>  Fulfill a waiter');
-  console.error('  migrate             Run migrations');
+  console.error('  migrate                   Run migrations');
   process.exit(1);
 }
 

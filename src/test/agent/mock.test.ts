@@ -66,4 +66,58 @@ describe('MockAgentRunner', () => {
     expect(result.cost).toBe(0.1);
     expect(result.output).toContain('agent-x'); // default output
   });
+
+  it('captura todos los params en calls[] para verificacion', async () => {
+    const runner = new MockAgentRunner();
+
+    await runner.run({ agentId: 'agent-a', prompt: 'prompt-1' });
+    await runner.run({ agentId: 'agent-b', prompt: 'prompt-2', sessionId: 'prev-session' });
+
+    expect(runner.calls).toHaveLength(2);
+    expect(runner.calls[0]?.agentId).toBe('agent-a');
+    expect(runner.calls[0]?.prompt).toBe('prompt-1');
+    expect(runner.calls[0]?.sessionId).toBeUndefined();
+    expect(runner.calls[1]?.agentId).toBe('agent-b');
+    expect(runner.calls[1]?.sessionId).toBe('prev-session');
+  });
+
+  it('sessionIdProvider permite configurar sessionId dinamicamente', async () => {
+    const runner = new MockAgentRunner();
+
+    runner.sessionIdProvider = (params, callIndex) => `custom-session-${callIndex}`;
+
+    const result1 = await runner.run({ agentId: 'agent-x', prompt: 'p1' });
+    const result2 = await runner.run({ agentId: 'agent-x', prompt: 'p2' });
+
+    expect(result1.sessionId).toBe('custom-session-0');
+    expect(result2.sessionId).toBe('custom-session-1');
+  });
+
+  it('successProvider permite simular fallos', async () => {
+    const runner = new MockAgentRunner();
+
+    runner.successProvider = (params, callIndex) => callIndex !== 1;
+
+    const result1 = await runner.run({ agentId: 'agent-x', prompt: 'p1' });
+    const result2 = await runner.run({ agentId: 'agent-x', prompt: 'p2' });
+    const result3 = await runner.run({ agentId: 'agent-x', prompt: 'p3' });
+
+    expect(result1.success).toBe(true);
+    expect(result2.success).toBe(false);
+    expect(result3.success).toBe(true);
+  });
+
+  it('reset limpia calls y providers', async () => {
+    const runner = new MockAgentRunner();
+
+    runner.sessionIdProvider = () => 'test-session';
+    await runner.run({ agentId: 'agent-x', prompt: 'p1' });
+
+    expect(runner.calls).toHaveLength(1);
+
+    runner.reset();
+
+    expect(runner.calls).toHaveLength(0);
+    expect(runner.sessionIdProvider).toBeUndefined();
+  });
 });

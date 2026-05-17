@@ -5,11 +5,14 @@ export interface AgentRunParams {
   agentId: string;
   prompt: string;
   allowedTools?: string[];
+  disallowedTools?: string[];
   permissionMode?: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
   maxTurns?: number;
   appendSystemPrompt?: string;
-  sessionId?: string;
-  outputFormat?: 'json' | 'stream-json';
+  sessionId?: string; // Session strategy: pasar sessionId previo para --resume
+  continueLast?: boolean;
+  outputFormat?: 'text' | 'json' | 'stream-json';
+  inputFormat?: 'text' | 'stream-json';
   addDir?: string[];
   model?: 'sonnet' | 'opus' | 'haiku';
   cwd?: string;
@@ -27,6 +30,7 @@ export interface AgentRunResult {
   tokensOutput?: number;
   rawJson?: unknown;
   error?: string;
+  childPid?: number; // FIX #3: PID del child process para cleanup
 }
 
 export interface AgentRunner {

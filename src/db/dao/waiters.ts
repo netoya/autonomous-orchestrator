@@ -2,6 +2,7 @@
 // Solo lo necesario para waiter pasivo en MVP.
 
 import type Database from 'better-sqlite3';
+import { insertEvent } from './events.js';
 
 export interface WaiterRow {
   id: string;
@@ -98,16 +99,41 @@ export function fulfillWaiter(
   fulfilled_by: string,
   fulfilled_at: number
 ): void {
-  const stmt = db.prepare(`
-    UPDATE waiters
-    SET status = 'fulfilled', value_json = ?, fulfilled_by = ?, fulfilled_at = ?
-    WHERE id = ?
-  `);
+  // Leer waiter antes del UPDATE para obtener task_id y flow_id
+  const waiter = findWaiterById(db, id);
+  if (!waiter) {
+    throw new Error(`Waiter ${id} not found`);
+  }
 
-  stmt.run(value_json, fulfilled_by, fulfilled_at, id);
+  // Transaccion atomica: UPDATE + insertEvent
+  db.transaction(() => {
+    const updateStmt = db.prepare(`
+      UPDATE waiters
+      SET status = 'fulfilled', value_json = ?, fulfilled_by = ?, fulfilled_at = ?
+      WHERE id = ?
+    `);
+    updateStmt.run(value_json, fulfilled_by, fulfilled_at, id);
+
+    // Emitir evento waiter.fulfilled
+    insertEvent(db, 'waiter.fulfilled', {
+      waiter_id: id,
+      task_id: waiter.task_id,
+      flow_id: waiter.flow_id,
+      value: JSON.parse(value_json),
+    }, fulfilled_at);
+  })();
 }
 
 export function findWaitingByFlow(db: Database.Database, flow_id: string): WaiterRow[] {
   const stmt = db.prepare('SELECT * FROM waiters WHERE flow_id = ? AND status = ? ORDER BY created_at');
   return stmt.all(flow_id, 'waiting') as WaiterRow[];
+}
+
+export function listPassiveWaitersForTask(db: Database.Database, task_id: string): WaiterRow[] {
+  const stmt = db.prepare(`
+    SELECT * FROM waiters
+    WHERE task_id = ? AND mode = 'passive' AND status = 'waiting'
+    ORDER BY created_at
+  `);
+  return stmt.all(task_id) as WaiterRow[];
 }
