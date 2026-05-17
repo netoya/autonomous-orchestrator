@@ -138,6 +138,68 @@ try {
     const flowId = getArg('--flow-id');
     const summary = getArg('--summary');
     markCoordinatorDone(db, flowId, { summary });
+  } else if (command === 'createExecWaiter') {
+    // Crea un waiter activo kind='exec-command' que el dispatcher ejecuta desde el orchestrator.
+    // Util para agentes que necesitan correr npm/npx/curl/playwright sin morir por SIGTERM del wrapper.
+    //
+    // Uso:
+    //   createExecWaiter --flow-id <id> --task-id <id> --step-id <step> --cmd "<comando>" [--cwd <path>] [--timeout-ms <N>]
+    //
+    // Output: JSON con waiter_id. El agente debe LEER el waiter despues (cuando este fulfilled) para obtener stdout/exitCode.
+    const { createActiveWaiter } = await import('../db/dao/waiters.js');
+    const { ulid } = await import('../lib/ulid.js');
+    const { now } = await import('../lib/clock.js');
+
+    const flowId = getArg('--flow-id');
+    const taskId = getArg('--task-id');
+    const stepId = getArg('--step-id');
+    const cmd = getArg('--cmd');
+    const cwdArg = getArg('--cwd', true);
+    const timeoutMsRaw = getArg('--timeout-ms', true);
+
+    if (!cmd) {
+      throw new Error('--cmd es obligatorio');
+    }
+
+    const timeoutMs = timeoutMsRaw ? parseInt(timeoutMsRaw, 10) : 120_000; // 2 min default
+    if (Number.isNaN(timeoutMs) || timeoutMs <= 0 || timeoutMs > 600_000) {
+      throw new Error('--timeout-ms debe ser entero positivo <= 600000 (10 min)');
+    }
+
+    const waiterId = ulid();
+    const ts = now();
+    const params = {
+      cmd,
+      ...(cwdArg ? { cwd: cwdArg } : {}),
+      timeoutMs,
+    };
+
+    const result = createActiveWaiter(db, {
+      id: waiterId,
+      flow_id: flowId,
+      task_id: taskId,
+      step_id: stepId,
+      kind: 'exec-command',
+      prompt: `Ejecutar comando: ${cmd}${cwdArg ? ` (cwd=${cwdArg})` : ''}`,
+      condition_kind: 'exec-command',
+      condition_params_json: JSON.stringify(params),
+      timeout_ms: timeoutMs,
+      created_at: ts,
+      expires_at: ts + timeoutMs + 60_000, // gracia de 60s mas alla del timeout del cmd
+    });
+
+    console.log(JSON.stringify({ waiter_id: result.id, status: 'waiting' }, null, 2));
+  } else if (command === 'readWaiter') {
+    // Lee el estado y value_json de un waiter (util para que el agente recupere el resultado
+    // de un exec-command fulfilled).
+    const waiterId = getArg('--waiter-id');
+    const row = db
+      .prepare(`SELECT id, status, value_json, fulfilled_at FROM waiters WHERE id=?`)
+      .get(waiterId);
+    if (!row) {
+      throw new Error(`waiter ${waiterId} not found`);
+    }
+    console.log(JSON.stringify(row, null, 2));
   } else if (command === 'createFlow') {
     // Parse args: --name <slug> --message "<msg>" --message-file <path> --autonomy <L0|L1|L2|L3> --seed-agent <agent_id> --seed-stage <stage> --cwd <path> --add-dir <comma-separated> --session-strategy <flow-agent-task|none> --max-turns <N> --priority <N>
     const name = getArg('--name');

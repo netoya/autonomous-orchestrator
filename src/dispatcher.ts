@@ -17,7 +17,10 @@ import {
 } from './db/dao/tasks.js';
 import {
   listPassiveWaitersForTask,
+  listPendingActiveWaiters,
+  fulfillWaiter,
 } from './db/dao/waiters.js';
+import { executeCommand } from './dispatcher/exec-runner.js';
 import {
   findFlowById,
   updateFlowStatus,
@@ -42,6 +45,7 @@ import type { AgentRunner } from './agent/types.js';
 const MAX_WORKERS = parseInt(process.env.MAX_WORKERS ?? '3', 10);
 const TICK_A_INTERVAL_MS = 500; // selector de tasks ready
 const TICK_E_INTERVAL_MS = 250; // consumer de eventos
+const TICK_F_INTERVAL_MS = 2000; // ejecutor de exec-command waiters (2s)
 const TICK_G_INTERVAL_MS = 30000; // re-invocacion coordinator para tasks failed (30s)
 const TICK_H_INTERVAL_MS = 60000; // cleanup waiters huerfanos (60s)
 const KILL_TIMEOUT_MS = parseInt(process.env.KILL_TIMEOUT_MS ?? '30000', 10);
@@ -64,8 +68,10 @@ export class Dispatcher {
   private running = false;
   private tickATimer: NodeJS.Timeout | null = null;
   private tickETimer: NodeJS.Timeout | null = null;
+  private tickFTimer: NodeJS.Timeout | null = null;
   private tickGTimer: NodeJS.Timeout | null = null;
   private tickHTimer: NodeJS.Timeout | null = null;
+  private execWaitersInFlight = new Set<string>(); // anti-doble-ejecucion
   private childPids = new Set<number>(); // FIX #3: trackear child processes
 
   constructor(dbPath?: string) {
@@ -184,6 +190,7 @@ export class Dispatcher {
     // Iniciar ticks
     this.tickATimer = setInterval(() => this.tickA(), TICK_A_INTERVAL_MS);
     this.tickETimer = setInterval(() => this.tickE(), TICK_E_INTERVAL_MS);
+    this.tickFTimer = setInterval(() => this.tickF(), TICK_F_INTERVAL_MS);
     this.tickGTimer = setInterval(() => this.tickG(), TICK_G_INTERVAL_MS);
     this.tickHTimer = setInterval(() => this.tickH(), TICK_H_INTERVAL_MS);
 
@@ -195,6 +202,7 @@ export class Dispatcher {
     this.running = false;
 
     // Detener ticks
+    if (this.tickFTimer) clearInterval(this.tickFTimer);
     if (this.tickATimer) clearInterval(this.tickATimer);
     if (this.tickETimer) clearInterval(this.tickETimer);
     if (this.tickGTimer) clearInterval(this.tickGTimer);
@@ -312,6 +320,91 @@ export class Dispatcher {
       }
     } catch (err) {
       console.error('[dispatcher] Tick E fatal error (caught, dispatcher survives):', err);
+    }
+  }
+
+  // Tick F: ejecutor de waiters activos kind='exec-command' (cada 2s).
+  // Permite a sub-claudes encolar comandos (npm run dev, playwright test, curl) sin morir
+  // por SIGTERM del wrapper anti-comandos. El dispatcher ejecuta desde su propio proceso
+  // y deja stdout/exitCode en value_json para que el agente lo lea via --resume.
+  private tickF(): void {
+    try {
+      if (existsSync(`${STATE_DIR}/.KILLSWITCH`)) {
+        return;
+      }
+      const pending = listPendingActiveWaiters(this.db, 'exec-command');
+      const now = clockNow();
+      for (const waiter of pending) {
+        if (this.execWaitersInFlight.has(waiter.id)) continue;
+
+        // Validar que no expiro
+        if (waiter.expires_at && waiter.expires_at < now) {
+          this.db
+            .prepare(`UPDATE waiters SET status='timeout' WHERE id=?`)
+            .run(waiter.id);
+          console.log(`[dispatcher] tickF: waiter ${waiter.id} expirado, marcado timeout`);
+          continue;
+        }
+
+        let params: { cmd: string; cwd?: string; timeoutMs?: number };
+        try {
+          params = JSON.parse(waiter.condition_params_json ?? '{}');
+          if (!params.cmd || typeof params.cmd !== 'string') {
+            throw new Error('cmd faltante o no string');
+          }
+        } catch (err) {
+          this.db
+            .prepare(`UPDATE waiters SET status='invalid', value_json=? WHERE id=?`)
+            .run(JSON.stringify({ error: `invalid params: ${String(err)}` }), waiter.id);
+          console.warn(`[dispatcher] tickF: waiter ${waiter.id} params invalidos`);
+          continue;
+        }
+
+        this.execWaitersInFlight.add(waiter.id);
+        console.log(
+          `[dispatcher] tickF: ejecutando exec-command waiter=${waiter.id} cmd="${params.cmd.slice(0, 80)}" cwd=${params.cwd ?? '(default)'}`,
+        );
+
+        // Ejecutar en background; no bloquear el tick
+        executeCommand(params)
+          .then((result) => {
+            const value = {
+              cmd: params.cmd,
+              cwd: params.cwd ?? null,
+              ok: result.ok,
+              exit_code: result.exitCode,
+              stdout: result.stdout,
+              stderr: result.stderr,
+              duration_ms: result.durationMs,
+              ...(result.rejected ? { rejected: result.rejected } : {}),
+            };
+            fulfillWaiter(
+              this.db,
+              waiter.id,
+              JSON.stringify(value),
+              'dispatcher-exec',
+              clockNow(),
+            );
+            console.log(
+              `[dispatcher] tickF: waiter ${waiter.id} fulfilled exit=${result.exitCode} dur=${result.durationMs}ms`,
+            );
+          })
+          .catch((err) => {
+            console.error(`[dispatcher] tickF: error ejecutando waiter ${waiter.id}:`, err);
+            try {
+              this.db
+                .prepare(`UPDATE waiters SET status='invalid', value_json=? WHERE id=?`)
+                .run(JSON.stringify({ error: String(err) }), waiter.id);
+            } catch {
+              /* ignore */
+            }
+          })
+          .finally(() => {
+            this.execWaitersInFlight.delete(waiter.id);
+          });
+      }
+    } catch (err) {
+      console.error('[dispatcher] Tick F fatal error (caught, dispatcher survives):', err);
     }
   }
 

@@ -137,3 +137,53 @@ export function listPassiveWaitersForTask(db: Database.Database, task_id: string
   `);
   return stmt.all(task_id) as WaiterRow[];
 }
+
+// ─── Active waiters (kind='exec-command') ─────────────────────────────────
+
+export interface CreateActiveWaiterInput {
+  id: string;
+  flow_id: string;
+  task_id: string;
+  step_id: string;
+  kind: string;                       // ej: 'exec-command'
+  prompt: string;                     // descripcion humana
+  condition_kind: string;             // ej: 'exec-command'
+  condition_params_json: string;      // {cmd, cwd, timeoutMs}
+  timeout_ms: number;
+  created_at: number;
+  expires_at: number;
+}
+
+export function createActiveWaiter(db: Database.Database, input: CreateActiveWaiterInput): WaiterRow {
+  const stmt = db.prepare(`
+    INSERT INTO waiters (
+      id, flow_id, task_id, step_id, mode, kind, prompt, schema_json, authz_json,
+      timeout_ms, created_at, expires_at, status,
+      condition_kind, condition_params_json
+    )
+    VALUES (?, ?, ?, ?, 'active', ?, ?, '{}', '{}', ?, ?, ?, 'waiting', ?, ?)
+  `);
+  stmt.run(
+    input.id,
+    input.flow_id,
+    input.task_id,
+    input.step_id,
+    input.kind,
+    input.prompt,
+    input.timeout_ms,
+    input.created_at,
+    input.expires_at,
+    input.condition_kind,
+    input.condition_params_json,
+  );
+  return findWaiterById(db, input.id)!;
+}
+
+export function listPendingActiveWaiters(db: Database.Database, kind: string): WaiterRow[] {
+  const stmt = db.prepare(`
+    SELECT * FROM waiters
+    WHERE mode = 'active' AND kind = ? AND status = 'waiting'
+    ORDER BY created_at
+  `);
+  return stmt.all(kind) as WaiterRow[];
+}

@@ -65,6 +65,34 @@ REGLAS:
 
     d) NO emitas createFlow si el flow actual fallo o si Angel no aprobo. Solo encadena exitos.
 
+15. CRITICO — IMPL tasks NO ejecutan comandos largos por Bash directo. Solo escriben codigo (Write/Edit).
+
+    Para tasks de implementacion (impl-*, *-render, *-logic), NO incluyas en el prompt instrucciones como "verificar con npm run dev" o "correr playwright". Esos comandos hacen morir al agente por SIGTERM (el wrapper anti-comandos los mata cuando son long-running o piden aprobacion).
+
+    En su lugar:
+    - Las tasks de IMPL solo escriben codigo. Terminan con un reporte de archivos creados.
+    - Las tasks de VERIFICACION (tests-*, smoke-*, run-*) usan el mecanismo de EXEC WAITER en vez de Bash directo:
+
+      Patron para que un agente ejecute comandos largos sin morir:
+        npx tsx /home/angel/projects/autonomous-orchestrator/src/coordinator/cli-tools.ts createExecWaiter \\
+          --flow-id <flowId> \\
+          --task-id <su propio taskId, el coordinator se lo pasa en el prompt> \\
+          --step-id smoke-1 \\
+          --cmd "cd /path/to/project && npx playwright test --reporter=list" \\
+          --timeout-ms 300000
+
+      Esto retorna {waiter_id, status: "waiting"}. El agente DEBE TERMINAR su turno aqui — el dispatcher ejecuta el comando externamente y deja stdout/exitCode en value_json del waiter.
+
+      Cuando el waiter se fulfille, la task vuelve a 'ready' y el agente sera re-invocado con --resume (gracias a session-strategy). En esa segunda invocacion, el agente lee el resultado:
+
+        npx tsx /home/angel/projects/autonomous-orchestrator/src/coordinator/cli-tools.ts readWaiter --waiter-id <id>
+
+      Y de ahi parsea value_json para conocer stdout/exitCode/stderr y continuar trabajando (ej: escribir smoke report).
+
+    Comandos seguros via Bash directo (NO necesitan exec waiter): Read, Write, Edit, Glob, Grep, y comandos cortos (<5s) como ls, cat, mkdir, cp, head, tail.
+
+    Comandos que SI requieren exec waiter: npm run dev, npx playwright test, curl localhost (si el server tiene que estar arriba), cualquier comando con timeout > 10s o que arranca un server.
+
 Cuando termines de planificar, emite <<COORDINATOR_DONE: Plan created with N tasks>>.
 `;
 }
