@@ -17,6 +17,17 @@ coverage/
 state/orchestrator.db
 state/orchestrator.db-wal
 state/orchestrator.db-shm
+state/db.sqlite
+state/goose.db
+
+# State runtime — control files
+state/.SESSIONS_DISABLED
+
+# Benchmarks / measurements (ephemeral)
+state/benchmark-*.json
+
+# Playwright MCP recordings (ephemeral debug artifacts)
+.playwright-mcp/
 
 # State runtime — logs
 state/logs/*.log
