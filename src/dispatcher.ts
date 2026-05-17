@@ -3,6 +3,7 @@
 // Recovery minimo, kill-switch, heartbeat, graceful shutdown.
 
 import { writeFileSync, existsSync } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
 import { openDb } from './db/connection.js';
 import { makeAgentRunner } from './agent/index.js';
 import { ulid } from './lib/ulid.js';
@@ -70,6 +71,18 @@ export class Dispatcher {
   constructor(dbPath?: string) {
     this.db = openDb(dbPath);
     this.agentRunner = makeAgentRunner();
+
+    // Exportar ORCHESTRATOR_DB para que cualquier subproceso (ej: claude headless
+    // ejecutando npx tsx cli-tools.ts createFlow desde otro cwd) resuelva la misma DB.
+    // Sin esto, openDb() en el subproceso caeria a process.cwd()/state/orchestrator.db
+    // que apuntaria a una DB inexistente cuando el cwd del agente es otro repo.
+    if (!process.env.ORCHESTRATOR_DB) {
+      const resolvedDbPath = dbPath
+        ? resolvePath(dbPath)
+        : resolvePath(process.cwd(), 'state/orchestrator.db');
+      process.env.ORCHESTRATOR_DB = resolvedDbPath;
+      console.log(`[dispatcher] Exporting ORCHESTRATOR_DB=${resolvedDbPath} to children`);
+    }
   }
 
   async start(): Promise<void> {
@@ -136,6 +149,30 @@ export class Dispatcher {
       for (const { id } of tasksWithPassiveWaiters) {
         updateTaskStatus(this.db, id, 'waiting-waiter', timestamp);
         console.log(`[dispatcher] Recovery: task ${id} -> waiting-waiter (passive waiters pending)`);
+      }
+    }
+
+    // Recovery: tasks huerfanas en 'running' (el dispatcher anterior murio sin marcarlas).
+    // Cualquier task en 'running' al arranque es necesariamente huerfana porque single-dispatcher:
+    // si este proceso esta arrancando, no hay otro worker procesandolas. Resetear a 'ready' para
+    // que tick A las retome. Incrementa retries para que tick G las pueda escalar si fallan repetidamente.
+    const orphanedRunning = this.db
+      .prepare(`SELECT id, stage, retries FROM tasks WHERE status = 'running'`)
+      .all() as Array<{ id: string; stage: string; retries: number }>;
+
+    if (orphanedRunning.length > 0) {
+      console.log(
+        `[dispatcher] Recovery: found ${orphanedRunning.length} orphaned tasks in 'running'. Resetting to 'ready'.`,
+      );
+      const timestamp = clockNow();
+      const stmt = this.db.prepare(
+        `UPDATE tasks SET status = 'ready', retries = retries + 1, updated_at = ? WHERE id = ?`,
+      );
+      for (const { id, stage, retries } of orphanedRunning) {
+        stmt.run(timestamp, id);
+        console.log(
+          `[dispatcher] Recovery: task ${id} (stage=${stage}) running -> ready, retries=${retries + 1}`,
+        );
       }
     }
 

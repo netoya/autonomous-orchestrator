@@ -289,3 +289,90 @@ export function markCoordinatorDone(
   // Solo emitir marker que el dispatcher parseara
   console.log(`<<COORDINATOR_DONE: ${params.summary}>>`);
 }
+
+export interface CreateNewFlowParams {
+  name: string;                    // slug del flow
+  autonomy?: 'L0' | 'L1' | 'L2' | 'L3'; // default 'L3'
+  seed_agent_id?: string;          // default 'softwarefactory_coordinator'
+  seed_stage?: string;             // default 'coordinate-seed'
+  message: string;                 // el prompt del coordinator-seed del flow nuevo
+  permission_mode?: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
+  max_turns?: number;
+  cwd?: string;
+  add_dir?: string[];
+  session_strategy?: 'flow-agent-task' | 'none';
+  priority?: number;
+}
+
+export interface CreateNewFlowResult {
+  flow_id: string;
+  task_id: string;          // del coordinator-seed creado
+}
+
+export function createNewFlow(
+  db: Database.Database,
+  params: CreateNewFlowParams,
+): CreateNewFlowResult {
+  const timestamp = now();
+  const flowId = ulid();
+  const taskId = ulid();
+  const seedStage = params.seed_stage ?? 'coordinate-seed';
+  const seedAgentId = params.seed_agent_id ?? 'softwarefactory_coordinator';
+  const autonomy = params.autonomy ?? 'L3';
+  const priority = params.priority ?? 10;
+
+  // Validar autonomy
+  if (!['L0', 'L1', 'L2', 'L3'].includes(autonomy)) {
+    throw new Error(`Invalid autonomy: ${autonomy}. Valid values: L0, L1, L2, L3`);
+  }
+
+  // Validar session_strategy
+  if (params.session_strategy && !['flow-agent-task', 'none'].includes(params.session_strategy)) {
+    throw new Error(
+      `Invalid session_strategy: ${params.session_strategy}. Valid values: flow-agent-task, none`
+    );
+  }
+
+  // Crear input_json para el coordinator seed
+  const inputJson = JSON.stringify({
+    message: params.message,
+    permission_mode: params.permission_mode ?? 'acceptEdits',
+    max_turns: params.max_turns ?? 60,
+    ...(params.cwd ? { cwd: params.cwd } : {}),
+    ...(params.add_dir && params.add_dir.length > 0 ? { add_dir: params.add_dir } : {}),
+    ...(params.session_strategy ? { session_strategy: params.session_strategy } : {}),
+  });
+
+  const idempotencyKey = `${flowId}-${seedStage}`;
+
+  // Transaccion: crear flow + seed task atomicamente
+  const tx = db.transaction(() => {
+    // Crear flow
+    db.prepare(
+      `INSERT INTO flows (id, name, version, status, autonomy, created_at, updated_at, budget_json)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, '{}')`,
+    ).run(flowId, params.name, '1.0.0', autonomy, timestamp, timestamp);
+
+    // Crear coordinator seed task
+    db.prepare(
+      `INSERT INTO tasks (
+         id, flow_id, stage, agent_id, status, input_json,
+         idempotency_key, created_at, updated_at, priority, tags_json
+       ) VALUES (?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, '[]')`,
+    ).run(
+      taskId,
+      flowId,
+      seedStage,
+      seedAgentId,
+      inputJson,
+      idempotencyKey,
+      timestamp,
+      timestamp,
+      priority,
+    );
+  });
+
+  tx();
+
+  return { flow_id: flowId, task_id: taskId };
+}

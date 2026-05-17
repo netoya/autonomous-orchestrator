@@ -4,7 +4,20 @@
 import Database from 'better-sqlite3';
 import path from 'node:path';
 
-const DEFAULT_DB_PATH = path.resolve(process.cwd(), 'state/orchestrator.db');
+// Resolucion del path de la DB en orden de prioridad:
+// 1. Path pasado como argumento explicito a openDb()
+// 2. Env var ORCHESTRATOR_DB (absoluto, util cuando un agente ejecuta cli-tools.ts
+//    desde otro cwd — sin esto, process.cwd() resolveria a una DB inexistente)
+// 3. process.cwd() + state/orchestrator.db (default historico)
+function resolveDefaultDbPath(): string {
+  const fromEnv = process.env.ORCHESTRATOR_DB;
+  if (fromEnv && fromEnv.length > 0) {
+    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(fromEnv);
+  }
+  return path.resolve(process.cwd(), 'state/orchestrator.db');
+}
+
+const DEFAULT_DB_PATH = resolveDefaultDbPath();
 
 /**
  * Abre conexion a SQLite y aplica los 6 PRAGMAs obligatorios.

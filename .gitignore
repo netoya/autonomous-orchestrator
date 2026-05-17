@@ -31,6 +31,7 @@ state/benchmark-*.json
 
 # Coordinator prompts dumped to disk (ephemeral, recreated each run)
 .coord-prompts/
+state/coord-prompts/
 
 # State runtime — logs
 state/logs/*.log

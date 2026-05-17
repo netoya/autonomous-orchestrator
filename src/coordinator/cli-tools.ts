@@ -10,6 +10,7 @@ import {
   createCoordinatorWaiter,
   observeFlowState,
   markCoordinatorDone,
+  createNewFlow,
 } from './tools.js';
 
 const args = process.argv.slice(2);
@@ -17,7 +18,7 @@ const command = args[0];
 
 if (!command) {
   console.error('Usage: cli-tools.ts <command> [args]');
-  console.error('Commands: createTask, createDependency, createWaiter, observe, markDone');
+  console.error('Commands: createTask, createDependency, createWaiter, observe, markDone, createFlow');
   process.exit(1);
 }
 
@@ -137,6 +138,60 @@ try {
     const flowId = getArg('--flow-id');
     const summary = getArg('--summary');
     markCoordinatorDone(db, flowId, { summary });
+  } else if (command === 'createFlow') {
+    // Parse args: --name <slug> --message "<msg>" --message-file <path> --autonomy <L0|L1|L2|L3> --seed-agent <agent_id> --seed-stage <stage> --cwd <path> --add-dir <comma-separated> --session-strategy <flow-agent-task|none> --max-turns <N> --priority <N>
+    const name = getArg('--name');
+    const messageFileArg = getArg('--message-file', true);
+    const message = messageFileArg
+      ? readFileSync(messageFileArg, 'utf8')
+      : getArg('--message');
+    const autonomyArg = getArg('--autonomy', true);
+    const seedAgentArg = getArg('--seed-agent', true);
+    const seedStageArg = getArg('--seed-stage', true);
+    const cwdArg = getArg('--cwd', true);
+    const addDirRaw = getArg('--add-dir', true);
+    const sessionStrategyArg = getArg('--session-strategy', true);
+    const maxTurnsRaw = getArg('--max-turns', true);
+    const priorityRaw = getArg('--priority', true);
+
+    // Validar autonomy
+    let autonomy: 'L0' | 'L1' | 'L2' | 'L3' = 'L3';
+    if (autonomyArg) {
+      if (!['L0', 'L1', 'L2', 'L3'].includes(autonomyArg)) {
+        throw new Error(`Invalid --autonomy: ${autonomyArg}. Valid values: L0, L1, L2, L3`);
+      }
+      autonomy = autonomyArg as 'L0' | 'L1' | 'L2' | 'L3';
+    }
+
+    // Validar session_strategy
+    let sessionStrategy: 'flow-agent-task' | 'none' | undefined = undefined;
+    if (sessionStrategyArg) {
+      if (!['flow-agent-task', 'none'].includes(sessionStrategyArg)) {
+        throw new Error(
+          `Invalid --session-strategy: ${sessionStrategyArg}. Valid values: flow-agent-task, none`
+        );
+      }
+      sessionStrategy = sessionStrategyArg as 'flow-agent-task' | 'none';
+    }
+
+    const addDir = addDirRaw ? addDirRaw.split(',').filter((s) => s.length > 0) : undefined;
+    const maxTurns = maxTurnsRaw ? parseInt(maxTurnsRaw, 10) : undefined;
+    const priority = priorityRaw ? parseInt(priorityRaw, 10) : 10;
+
+    const result = createNewFlow(db, {
+      name,
+      message,
+      autonomy,
+      seed_agent_id: seedAgentArg || undefined,
+      seed_stage: seedStageArg || undefined,
+      cwd: cwdArg || undefined,
+      add_dir: addDir,
+      session_strategy: sessionStrategy,
+      max_turns: maxTurns,
+      priority,
+    });
+
+    console.log(JSON.stringify(result, null, 2));
   } else {
     console.error(`Unknown command: ${command}`);
     process.exit(1);
