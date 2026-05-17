@@ -29,6 +29,9 @@ state/benchmark-*.json
 # Playwright MCP recordings (ephemeral debug artifacts)
 .playwright-mcp/
 
+# Coordinator prompts dumped to disk (ephemeral, recreated each run)
+.coord-prompts/
+
 # State runtime — logs
 state/logs/*.log
 state/logs/*.out

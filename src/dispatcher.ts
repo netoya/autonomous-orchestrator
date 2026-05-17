@@ -848,6 +848,14 @@ Flow id: ${failedTask.flow_id}`;
         allowedTools = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'];
       }
 
+      // Coordinator NUNCA recibe cwd/add_dir al runner: debe correr desde el cwd
+      // default del orchestrator para que cli-tools.ts resuelva la DB correctamente
+      // via process.cwd(). Los valores se quedan en input_json para que cli-tools.ts
+      // los lea como herencia hacia sub-tasks.
+      const isCoordinator = task.agent_id === 'softwarefactory_coordinator';
+      const runnerCwd = isCoordinator ? undefined : cwd;
+      const runnerAddDir = isCoordinator ? undefined : addDir;
+
       // Invocar agente
       const result = await this.agentRunner.run({
         agentId: task.agent_id,
@@ -856,8 +864,8 @@ Flow id: ${failedTask.flow_id}`;
         maxTurns,
         appendSystemPrompt,
         allowedTools,
-        addDir,
-        cwd,
+        addDir: runnerAddDir,
+        cwd: runnerCwd,
         timeoutMs,
         sessionId: requestedSessionId,
       });

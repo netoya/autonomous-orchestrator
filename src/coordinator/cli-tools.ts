@@ -2,6 +2,7 @@
 // CLI wrapper para las tools del coordinator.
 // Permite al coordinator invocar las tools via Bash sin necesidad de MCP server.
 
+import { readFileSync } from 'node:fs';
 import { openDb } from '../db/connection.js';
 import {
   createCoordinatorTask,
@@ -28,7 +29,10 @@ try {
     const flowId = getArg('--flow-id');
     const stage = getArg('--stage');
     const agentId = getArg('--agent');
-    const message = getArg('--message');
+    const messageFileArg = getArg('--message-file', true);
+    const message = messageFileArg
+      ? readFileSync(messageFileArg, 'utf8')
+      : getArg('--message');
     const dependsOnRaw = getArg('--depends-on', true); // optional
     const priorityRaw = getArg('--priority', true);
     const estimatedMinutesRaw = getArg('--estimated-minutes', true);
