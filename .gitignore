@@ -108,3 +108,8 @@ tmp/
 temp/
 *.tmp
 .cache/
+
+# Ephemerals: coord prompts dumped, debug scripts, playwright test artifacts
+.tmp-coord-prompts/
+scripts/inspect-failed.ts
+test-results/
