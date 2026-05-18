@@ -154,7 +154,7 @@ try {
     const taskId = getArg('--task-id');
     const stepId = getArg('--step-id');
     const cmd = getArg('--cmd');
-    const cwdArg = getArg('--cwd', true);
+    let cwdArg = getArg('--cwd', true);
     const timeoutMsRaw = getArg('--timeout-ms', true);
 
     if (!cmd) {
@@ -164,6 +164,30 @@ try {
     const timeoutMs = timeoutMsRaw ? parseInt(timeoutMsRaw, 10) : 120_000; // 2 min default
     if (Number.isNaN(timeoutMs) || timeoutMs <= 0 || timeoutMs > 600_000) {
       throw new Error('--timeout-ms debe ser entero positivo <= 600000 (10 min)');
+    }
+
+    // FIX: si --cwd no se paso, heredar del input_json del coordinator-seed del flow.
+    // Sin esto, el dispatcher ejecuta el cmd desde process.cwd() del orchestrator,
+    // que no tiene los binarios del proyecto del agente (bug observado: Sofia ejecuto
+    // `npx playwright test` y corrio Vitest del orchestrator en lugar de Playwright del visor).
+    if (!cwdArg) {
+      const seed = db
+        .prepare(
+          `SELECT input_json FROM tasks
+           WHERE flow_id = ? AND agent_id = 'softwarefactory_coordinator'
+           ORDER BY created_at ASC LIMIT 1`,
+        )
+        .get(flowId) as { input_json: string } | undefined;
+      if (seed) {
+        try {
+          const parsed = JSON.parse(seed.input_json);
+          if (typeof parsed.cwd === 'string' && parsed.cwd.length > 0) {
+            cwdArg = parsed.cwd;
+          }
+        } catch {
+          /* ignore */
+        }
+      }
     }
 
     const waiterId = ulid();

@@ -96,6 +96,42 @@ export function createCoordinatorTask(
       depStmt.run(taskId, depId, timestamp);
     }
 
+    // FIX: si este stage es un retry de uno failed (pattern: <original>-retry-N),
+    // repuntar las dependencies downstream que apuntaban al original failed para
+    // que ahora apunten a este retry. Sin esto, tasks downstream quedan trabadas
+    // en 'queued' aunque el retry haya pasado a 'done' (bug observado en flow
+    // visor-ui-polish: tests-ui-polish quedo queued porque dependia de
+    // impl-ui-polish failed, no de impl-ui-polish-retry-1 done).
+    const retryMatch = params.stage.match(/^(.+)-retry-\d+$/);
+    if (retryMatch) {
+      const originalStage = retryMatch[1];
+      const originalTask = db
+        .prepare(
+          `SELECT id FROM tasks
+           WHERE flow_id = ? AND stage = ? AND status = 'failed'
+           LIMIT 1`,
+        )
+        .get(flowId, originalStage) as { id: string } | undefined;
+
+      if (originalTask) {
+        // Repuntar deps: cambiar depends_on_task_id de la task original a la del retry.
+        // INSERT OR IGNORE evita colisiones con UNIQUE(task_id, depends_on_task_id) por si
+        // alguna task downstream ya dependia de ambas.
+        db.prepare(
+          `UPDATE OR IGNORE task_dependencies
+           SET depends_on_task_id = ?
+           WHERE depends_on_task_id = ?`,
+        ).run(taskId, originalTask.id);
+
+        // Limpieza: si por algun caso quedaron filas con depends_on_task_id apuntando al
+        // original failed (porque UPDATE OR IGNORE rechazo por colision UNIQUE), borrarlas.
+        // En ese caso la task downstream ya tenia una dep al retry valida.
+        db.prepare(
+          `DELETE FROM task_dependencies WHERE depends_on_task_id = ?`,
+        ).run(originalTask.id);
+      }
+    }
+
     // Race fix: si todas las deps ya estan done, promover a ready.
     if (resolvedDepIds.length > 0) {
       const pendingDeps = db
@@ -320,6 +356,26 @@ export function createNewFlow(
   const seedAgentId = params.seed_agent_id ?? 'softwarefactory_coordinator';
   const autonomy = params.autonomy ?? 'L3';
   const priority = params.priority ?? 10;
+
+  // Idempotencia: si ya existe un flow con el mismo `name` en estado no-terminal,
+  // devolver su id y el id del coordinator-seed task en lugar de crear duplicado.
+  // Esto cubre el caso de handoffs re-ejecutados por Recovery #3 (Bug observado:
+  // dos visor-ui-polish creados cuando el dispatcher se reinicio mid-handoff).
+  const existing = db
+    .prepare(
+      `SELECT f.id AS flow_id, t.id AS task_id
+       FROM flows f
+       JOIN tasks t ON t.flow_id = f.id AND t.agent_id = 'softwarefactory_coordinator'
+       WHERE f.name = ?
+         AND f.status NOT IN ('completed','failed','cancelled')
+       ORDER BY f.created_at ASC, t.created_at ASC
+       LIMIT 1`,
+    )
+    .get(params.name) as { flow_id: string; task_id: string } | undefined;
+
+  if (existing) {
+    return { flow_id: existing.flow_id, task_id: existing.task_id };
+  }
 
   // Validar autonomy
   if (!['L0', 'L1', 'L2', 'L3'].includes(autonomy)) {

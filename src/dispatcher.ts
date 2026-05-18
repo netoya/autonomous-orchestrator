@@ -267,6 +267,24 @@ export class Dispatcher {
       const freeSlots = MAX_WORKERS - this.activeWorkerIds.size;
       if (freeSlots <= 0) return;
 
+      // FIX: promover tasks queued -> ready cuando todas sus deps estan done.
+      // Sin este step, una task downstream cuya dep fue repuntada despues de crear la task
+      // (ej: -retry-N que tomo el rol del original failed) queda trabada en queued para siempre.
+      // createCoordinatorTask hace esta promocion solo en el momento de crear la task; este
+      // tick mantiene la invariante en el tiempo.
+      this.db
+        .prepare(
+          `UPDATE tasks
+           SET status = 'ready', updated_at = ?
+           WHERE status = 'queued'
+             AND NOT EXISTS (
+               SELECT 1 FROM task_dependencies td
+               JOIN tasks dep ON dep.id = td.depends_on_task_id
+               WHERE td.task_id = tasks.id AND dep.status <> 'done'
+             )`,
+        )
+        .run(clockNow());
+
       // Selector: buscar tasks ready con mayor prioridad (work stealing minimo)
       // TODO(roman): implementar WSJF completo cuando haya business_value + estimated_minutes
       const readyTasks = this.db
@@ -415,12 +433,17 @@ export class Dispatcher {
         return;
       }
 
-      // Buscar tasks failed que NO tienen ya un coordinator-recovery atendiendolas
+      // Buscar tasks failed que NO tienen ya un coordinator-recovery atendiendolas.
+      // FIX: ignorar tasks cuyo flow esta cancelled/failed/completed — esos flows ya estan cerrados
+      // y NO deben generar mas recovery (bug observado: visor-ws-stream cancelled generaba
+      // waiters recovery-recursion-block en loop infinito).
       const failedTasks = this.db
         .prepare(
           `SELECT t.id, t.flow_id, t.stage, t.agent_id, t.retries, t.error
            FROM tasks t
+           JOIN flows f ON f.id = t.flow_id
            WHERE t.status = 'failed'
+             AND f.status NOT IN ('cancelled','failed','completed')
              AND NOT EXISTS (
                SELECT 1 FROM tasks coord
                WHERE coord.flow_id = t.flow_id
@@ -451,6 +474,24 @@ export class Dispatcher {
         // Si la task fallida ya es ella misma un coordinator-recovery, NO crear otro recovery.
         // En su lugar, crear un waiter pasivo para decision humana.
         if (failedTask.stage.startsWith('coordinate-recovery-')) {
+          // FIX: chequear que no exista ya un waiter recovery-recursion-block para esta task.
+          // Sin este check, cada Tick G inserta un nuevo waiter con ULID nuevo (no hay UNIQUE
+          // en task_id+step_id), causando regeneracion infinita (bug observado: 2546 waiters
+          // generados para visor-ws-stream).
+          const existingWaiter = this.db
+            .prepare(
+              `SELECT id FROM waiters
+               WHERE task_id = ? AND step_id = 'recovery-recursion-block'
+                 AND status IN ('waiting','fulfilled','rejected')
+               LIMIT 1`,
+            )
+            .get(failedTask.id) as { id: string } | undefined;
+
+          if (existingWaiter) {
+            // Ya existe waiter para esta task — skip silenciosamente (evita log spam)
+            continue;
+          }
+
           console.log(
             `[dispatcher] Tick G: failed task ${failedTask.id} is already a coordinator-recovery (${failedTask.stage}), creating passive waiter instead of recursion`,
           );
