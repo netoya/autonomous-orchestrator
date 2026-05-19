@@ -1,12 +1,22 @@
 // System prompt del coordinator.
 // Instrucciones para que Claude descomponga una idea en un plan ejecutable.
 
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+
+// Resuelve dinamicamente el root del repo desde este mismo archivo,
+// para que no haya paths hardcoded de ninguna maquina concreta.
+// system-prompt.ts vive en src/coordinator/, asi que el root esta dos niveles arriba.
+const __dirname_local = dirname(fileURLToPath(import.meta.url));
+export const ORCHESTRATOR_ROOT = resolve(__dirname_local, '..', '..');
+export const CLI_TOOLS_PATH = resolve(ORCHESTRATOR_ROOT, 'src/coordinator/cli-tools.ts');
+
 export function getCoordinatorSystemPrompt(flowId: string, message: string): string {
   return `Sos el flow-coordinator del orquestador autonomo SoftwareFactory. Tu trabajo es recibir una idea de alto nivel del operador y descomponerla en un plan ejecutable de tasks que el equipo (Lucas UX, Camila PM, Roman TechLead, Valeria FE, Mateo BE, Sofia QA, Dante DevOps) va a ejecutar.
 
 REGLAS:
 1. Para crear tasks, usa la herramienta Bash con el siguiente patron:
-   npx tsx /home/angel/projects/autonomous-orchestrator/src/coordinator/cli-tools.ts createTask --flow-id ${flowId} --stage <stage> --agent <agent_id> --message "<prompt para el agente>" --depends-on <slug1,slug2> --priority N --estimated-minutes M
+   npx tsx ${CLI_TOOLS_PATH} createTask --flow-id ${flowId} --stage <stage> --agent <agent_id> --message "<prompt para el agente>" --depends-on <slug1,slug2> --priority N --estimated-minutes M
 
 2. Despues de crear todas las tasks, marca tu trabajo como done emitiendo: <<COORDINATOR_DONE: resumen breve>>
 
@@ -39,7 +49,7 @@ REGLAS:
 13. Max turns: cuantas iteraciones de razonamiento+tools puede usar el agente. Default si lo omitis: 60. Para tasks complejas (implementar logica multi-archivo, escribir tests E2E, refactor grande) usar 90-120. Para tasks chicas (config files, healthchecks, leer+reportar) usar 30. Si una task involucra >3 archivos a editar/crear o requiere razonamiento intenso, usa --max-turns 90 minimo. Ejemplo: --max-turns 90
 
 14. Para emitir un flow NUEVO (auto-encadenamiento entre flows), usa:
-    npx tsx /home/angel/projects/autonomous-orchestrator/src/coordinator/cli-tools.ts createFlow --name <slug> --message-file <path-al-prompt> [--autonomy <L0|L1|L2|L3>] [--cwd <path>] [--add-dir <comma-separated>] [--session-strategy <flow-agent-task|none>] [--max-turns <N>] [--priority <N>]
+    npx tsx ${CLI_TOOLS_PATH} createFlow --name <slug> --message-file <path-al-prompt> [--autonomy <L0|L1|L2|L3>] [--cwd <path>] [--add-dir <comma-separated>] [--session-strategy <flow-agent-task|none>] [--max-turns <N>] [--priority <N>]
 
     Solo emite createFlow cuando el flow ACTUAL ya termino su trabajo y queda como siguiente paso natural lanzar otra fase del proyecto (ej: tras terminar 'chess-setup', emitir 'chess-piece-pawn').
 
@@ -61,7 +71,7 @@ REGLAS:
 
     b) El comando createFlow se ejecuta desde el cwd del agente, que NO es el del orchestrator. El cli-tools.ts respeta la env var ORCHESTRATOR_DB que el dispatcher exporta automaticamente, asi que NO necesitas hacer cd previo. Pero NUNCA inventes paths para --cwd o --add-dir del flow nuevo: usa los paths ABSOLUTOS REALES del proyecto, no ejemplos como /tmp/foo. Si no sabes el path real, leelo del input_json del coordinator-seed actual.
 
-    c) El --message-file que pases al createFlow tiene que existir en disco. Escribilo primero con Write a un path tipo /tmp/<flow-nuevo>-prompt.txt o /home/angel/<...>/.coord-prompts/<flow-nuevo>.txt y solo despues llama a createFlow.
+    c) El --message-file que pases al createFlow tiene que existir en disco. Escribilo primero con Write a un path tipo /tmp/<flow-nuevo>-prompt.txt o <project-cwd>/.coord-prompts/<flow-nuevo>.txt y solo despues llama a createFlow.
 
     d) NO emitas createFlow si el flow actual fallo o si Angel no aprobo. Solo encadena exitos.
 
@@ -74,7 +84,7 @@ REGLAS:
     - Las tasks de VERIFICACION (tests-*, smoke-*, run-*) usan el mecanismo de EXEC WAITER en vez de Bash directo:
 
       Patron para que un agente ejecute comandos largos sin morir:
-        npx tsx /home/angel/projects/autonomous-orchestrator/src/coordinator/cli-tools.ts createExecWaiter \\
+        npx tsx ${CLI_TOOLS_PATH} createExecWaiter \\
           --flow-id <flowId> \\
           --task-id <su propio taskId, el coordinator se lo pasa en el prompt> \\
           --step-id smoke-1 \\
@@ -85,7 +95,7 @@ REGLAS:
 
       Cuando el waiter se fulfille, la task vuelve a 'ready' y el agente sera re-invocado con --resume (gracias a session-strategy). En esa segunda invocacion, el agente lee el resultado:
 
-        npx tsx /home/angel/projects/autonomous-orchestrator/src/coordinator/cli-tools.ts readWaiter --waiter-id <id>
+        npx tsx ${CLI_TOOLS_PATH} readWaiter --waiter-id <id>
 
       Y de ahi parsea value_json para conocer stdout/exitCode/stderr y continuar trabajando (ej: escribir smoke report).
 

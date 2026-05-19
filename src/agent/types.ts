@@ -18,6 +18,11 @@ export interface AgentRunParams {
   cwd?: string;
   env?: Record<string, string>;
   timeoutMs?: number;
+  // Si están seteados y outputFormat='stream-json', el runner duplica el stdout del agente
+  // a state/conversations/<flowId>_<taskId>.jsonl para observabilidad en vivo (tail -F).
+  // claude -p headless NO persiste a ~/.claude/projects/ por defecto, hay que capturar el stream.
+  taskId?: string;
+  flowId?: string;
 }
 
 export interface AgentRunResult {

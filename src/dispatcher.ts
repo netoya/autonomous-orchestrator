@@ -8,7 +8,7 @@ import { openDb } from './db/connection.js';
 import { makeAgentRunner } from './agent/index.js';
 import { ulid } from './lib/ulid.js';
 import { now as clockNow } from './lib/clock.js';
-import { getCoordinatorSystemPrompt } from './coordinator/system-prompt.js';
+import { getCoordinatorSystemPrompt, CLI_TOOLS_PATH } from './coordinator/system-prompt.js';
 import {
   findTaskById,
   updateTaskStatus,
@@ -572,7 +572,7 @@ Retries usados: ${failedTask.retries}
 
 Lee los archivos relevantes del proyecto para entender el contexto. Opciones:
 1. Si crees que se puede reintentar con un prompt mejor, crea una task NUEVA con el mismo stage (sera deduplicada por idempotency_key — usa un sufijo como -retry-1 en el stage).
-2. Si el problema requiere intervencion humana, crea un waiter pasivo (npx tsx /home/angel/projects/autonomous-orchestrator/src/coordinator/cli-tools.ts createWaiter --flow-id ${failedTask.flow_id} --task-slug ${coordinatorStage} --step-id decision-1 --kind approve-text --prompt "Decidir como resolver la task fallida ${failedTask.stage}" --schema-json '{"type":"object","properties":{"action":{"type":"string"},"reason":{"type":"string"}},"required":["action","reason"]}') que pida al operador que decida.
+2. Si el problema requiere intervencion humana, crea un waiter pasivo (npx tsx ${CLI_TOOLS_PATH} createWaiter --flow-id ${failedTask.flow_id} --task-slug ${coordinatorStage} --step-id decision-1 --kind approve-text --prompt "Decidir como resolver la task fallida ${failedTask.stage}" --schema-json '{"type":"object","properties":{"action":{"type":"string"},"reason":{"type":"string"}},"required":["action","reason"]}') que pida al operador que decida.
 3. Si la task ya hizo trabajo util (revisa archivos en el directorio del proyecto), puedes considerarla parcialmente exitosa y crear sub-tasks que continuen desde ahi.
 
 Flow id: ${failedTask.flow_id}`;
@@ -1011,7 +1011,7 @@ Flow id: ${failedTask.flow_id}`;
           'Read',
           'Glob',
           'Grep',
-          'Bash(npx tsx /home/angel/projects/autonomous-orchestrator/src/coordinator/cli-tools.ts:*)',
+          `Bash(npx tsx ${CLI_TOOLS_PATH}:*)`,
         ];
       } else {
         // FIX #1: Todos los demas agentes necesitan permisos para escribir archivos
@@ -1039,6 +1039,8 @@ Flow id: ${failedTask.flow_id}`;
         cwd: runnerCwd,
         timeoutMs,
         sessionId: requestedSessionId,
+        taskId: task.id,
+        flowId: task.flow_id,
       });
 
       // FIX #3: Trackear PID del child process

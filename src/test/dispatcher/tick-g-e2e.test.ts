@@ -10,6 +10,7 @@ import { createFlow } from '../../db/dao/flows.js';
 import { createTask } from '../../db/dao/tasks.js';
 import { fulfillWaiter, findWaitingByFlow } from '../../db/dao/waiters.js';
 import { MockAgentRunner } from '../../agent/mock.js';
+import { CLI_TOOLS_PATH } from '../../coordinator/system-prompt.js';
 import { ulid } from '../../lib/ulid.js';
 import { now } from '../../lib/clock.js';
 import { createTestSchema } from '../helpers/test-schema.js';
@@ -92,7 +93,7 @@ Retries usados: 0
 
 Lee los archivos relevantes del proyecto para entender el contexto. Opciones:
 1. Si crees que se puede reintentar con un prompt mejor, crea una task NUEVA con el mismo stage (sera deduplicada por idempotency_key — usa un sufijo como -retry-1 en el stage).
-2. Si el problema requiere intervencion humana, crea un waiter pasivo (npx tsx /home/angel/projects/autonomous-orchestrator/src/coordinator/cli-tools.ts createWaiter --flow-id ${flowId} --task-slug coordinate-recovery-dummy-task --step-id decision-1 --kind approve-text --prompt "Decidir como resolver la task fallida dummy-task" --schema-json '{"type":"object","properties":{"action":{"type":"string"},"reason":{"type":"string"}},"required":["action","reason"]}') que pida al operador que decida.
+2. Si el problema requiere intervencion humana, crea un waiter pasivo (npx tsx ${CLI_TOOLS_PATH} createWaiter --flow-id ${flowId} --task-slug coordinate-recovery-dummy-task --step-id decision-1 --kind approve-text --prompt "Decidir como resolver la task fallida dummy-task" --schema-json '{"type":"object","properties":{"action":{"type":"string"},"reason":{"type":"string"}},"required":["action","reason"]}') que pida al operador que decida.
 3. Si la task ya hizo trabajo util (revisa archivos en el directorio del proyecto), puedes considerarla parcialmente exitosa y crear sub-tasks que continuen desde ahi.
 
 Flow id: ${flowId}`;
@@ -177,7 +178,7 @@ Retries usados: 0
 
 Lee los archivos relevantes del proyecto para entender el contexto. Opciones:
 1. Si crees que se puede reintentar con un prompt mejor, crea una task NUEVA con el mismo stage (sera deduplicada por idempotency_key — usa un sufijo como -retry-1 en el stage).
-2. Si el problema requiere intervencion humana, crea un waiter pasivo (npx tsx /home/angel/projects/autonomous-orchestrator/src/coordinator/cli-tools.ts createWaiter --flow-id ${flowId} --task-slug coordinate-recovery-failing-task --step-id decision-1 --kind approve-text --prompt "Decidir como resolver la task fallida failing-task" --schema-json '{"type":"object","properties":{"action":{"type":"string"},"reason":{"type":"string"}},"required":["action","reason"]}') que pida al operador que decida.
+2. Si el problema requiere intervencion humana, crea un waiter pasivo (npx tsx ${CLI_TOOLS_PATH} createWaiter --flow-id ${flowId} --task-slug coordinate-recovery-failing-task --step-id decision-1 --kind approve-text --prompt "Decidir como resolver la task fallida failing-task" --schema-json '{"type":"object","properties":{"action":{"type":"string"},"reason":{"type":"string"}},"required":["action","reason"]}') que pida al operador que decida.
 3. Si la task ya hizo trabajo util (revisa archivos en el directorio del proyecto), puedes considerarla parcialmente exitosa y crear sub-tasks que continuen desde ahi.
 
 Flow id: ${flowId}`;

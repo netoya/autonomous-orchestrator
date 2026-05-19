@@ -4,7 +4,13 @@
 // Alineado con docs/claude-headless.md.
 
 import { spawn } from 'node:child_process';
+import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
 import type { AgentRunner, AgentRunParams, AgentRunResult } from './types.js';
+
+// Donde tee'amos el stdout de claude para observabilidad en vivo.
+// claude -p headless NO escribe a ~/.claude/projects/ (eso solo lo hace la GUI).
+const STREAM_DIR = process.env.STREAM_DIR ?? 'state/conversations';
 
 export class ClaudeCodeRunner implements AgentRunner {
   constructor() {
@@ -34,7 +40,10 @@ export class ClaudeCodeRunner implements AgentRunner {
       }
     }
 
-    const outputFormat = params.outputFormat ?? 'json';
+    // Si tenemos taskId, fuerza stream-json para que el stdout salga incremental
+    // y podamos tee'arlo a fichero para observabilidad en vivo.
+    const outputFormat =
+      params.outputFormat ?? (params.taskId ? 'stream-json' : 'json');
 
     // Construir args para `claude`
     const args: string[] = ['-p', params.prompt];
@@ -91,6 +100,21 @@ export class ClaudeCodeRunner implements AgentRunner {
       }
     }
 
+    // Tee del stdout a fichero para observabilidad en vivo (tail -F).
+    // Solo si outputFormat=stream-json + taskId (sino el fichero seria un único JSON al final, no útil).
+    let streamFile: WriteStream | null = null;
+    if (outputFormat === 'stream-json' && params.taskId) {
+      try {
+        mkdirSync(STREAM_DIR, { recursive: true });
+        const filename = params.flowId
+          ? `${params.flowId}_${params.taskId}.jsonl`
+          : `${params.taskId}.jsonl`;
+        streamFile = createWriteStream(resolvePath(STREAM_DIR, filename), { flags: 'a' });
+      } catch (err) {
+        console.warn(`[claude-runner] tee disabled: ${(err as Error).message}`);
+      }
+    }
+
     // Spawn claude
     // stdio: 'ignore' en stdin para que claude -p no espere input por pipe (sin esto se cuelga).
     return new Promise<AgentRunResult>((resolve) => {
@@ -108,14 +132,25 @@ export class ClaudeCodeRunner implements AgentRunner {
       let stderr = '';
 
       proc.stdout.on('data', (chunk) => {
-        stdout += chunk.toString();
+        const text = chunk.toString();
+        stdout += text;
+        if (streamFile) streamFile.write(text);
       });
 
       proc.stderr.on('data', (chunk) => {
         stderr += chunk.toString();
       });
 
+      // Cierro el stream cuando termine (en close y error).
+      const closeStream = () => {
+        if (streamFile) {
+          streamFile.end();
+          streamFile = null;
+        }
+      };
+
       proc.on('error', (err) => {
+        closeStream();
         resolve({
           success: false,
           sessionId: '',
@@ -126,6 +161,7 @@ export class ClaudeCodeRunner implements AgentRunner {
       });
 
       proc.on('close', (exitCode) => {
+        closeStream();
         // FIX #1 (P0): Parsear stdout JSON PRIMERO, DESPUES validar exit code.
         // Razon: claude CLI puede salir con exit 1 (ej: max_turns_reached)
         // pero haber escrito JSON valido con is_error=false. Confiamos en el JSON.
