@@ -43,7 +43,8 @@ describe('Race condition en handleWaiterFulfilled', () => {
         autonomy TEXT NOT NULL DEFAULT 'L3',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        budget_json TEXT NOT NULL DEFAULT '{}'
+        budget_json TEXT NOT NULL DEFAULT '{}',
+        parent_flow_id TEXT
       );
 
       CREATE TABLE tasks (
@@ -92,7 +93,8 @@ describe('Race condition en handleWaiterFulfilled', () => {
         finished_at INTEGER,
         status TEXT NOT NULL,
         tokens_input INTEGER NOT NULL DEFAULT 0,
-        tokens_output INTEGER NOT NULL DEFAULT 0
+        tokens_output INTEGER NOT NULL DEFAULT 0,
+        child_pid INTEGER
       );
 
       CREATE TABLE waiters (
