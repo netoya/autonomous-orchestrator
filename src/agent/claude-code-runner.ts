@@ -128,6 +128,16 @@ export class ClaudeCodeRunner implements AgentRunner {
       // FIX #3: Capturar PID para cleanup
       const childPid = proc.pid;
 
+      // Notificar al caller (dispatcher) para persistir pid en DB —
+      // habilita cancel cross-restart cuando el state in-memory se pierde.
+      if (childPid !== undefined && params.onChildSpawned) {
+        try {
+          params.onChildSpawned(childPid);
+        } catch (err) {
+          console.error('[claude-code-runner] onChildSpawned callback threw:', err);
+        }
+      }
+
       let stdout = '';
       let stderr = '';
 

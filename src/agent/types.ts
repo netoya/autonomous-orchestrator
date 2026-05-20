@@ -23,6 +23,12 @@ export interface AgentRunParams {
   // claude -p headless NO persiste a ~/.claude/projects/ por defecto, hay que capturar el stream.
   taskId?: string;
   flowId?: string;
+  /**
+   * Callback opcional invocado JUSTO tras `spawn()`, con el pid del child.
+   * Permite persistir el pid en DB (executions.child_pid) para que cancel
+   * cross-restart funcione. NO se invoca si el spawn falla (pid undefined).
+   */
+  onChildSpawned?: (pid: number) => void;
 }
 
 export interface AgentRunResult {

@@ -28,6 +28,8 @@ import {
 import {
   createExecution,
   finishExecution,
+  setExecutionPid,
+  listRunningPidsForFlow,
 } from './db/dao/executions.js';
 import {
   listPendingEvents,
@@ -777,25 +779,22 @@ Flow id: ${failedTask.flow_id}`;
       cancelled_waiters: string[];
     };
 
-    // Identificar qué task_ids estaban activas y matar sus child PIDs si los tenemos trackeados.
-    // El Set this.activeWorkerIds contiene los taskIds en ejecución; matamos sus childPids correspondientes.
+    // Resolver pids desde DB (no in-memory) para que funcione cross-restart:
+    // si el dispatcher reinicio entre spawn y cancel, this.childPids esta vacio
+    // pero executions.child_pid sigue ahi.
     let killed = 0;
-    for (const taskId of payload.cancelled_tasks) {
-      if (this.activeWorkerIds.has(taskId)) {
-        // Buscar el childPid asociado a este task. El Set this.childPids es global del dispatcher,
-        // no por task — pero matarlos a todos es overkill. En lugar de eso, marcamos para que
-        // el proc.on('close') maneje el cleanup natural cuando exit code != 0.
-        // Por ahora: SIGTERM a todos los childPids del dispatcher (best-effort).
-        for (const pid of this.childPids) {
-          try {
-            process.kill(pid, 'SIGTERM');
-            killed++;
-          } catch {
-            // Proceso ya muerto, ignorar.
-          }
+    const pidsFromDb = listRunningPidsForFlow(this.db, payload.flow_id);
+    for (const pid of pidsFromDb) {
+      try {
+        process.kill(pid, 'SIGTERM');
+        killed++;
+        this.childPids.delete(pid);
+      } catch (err) {
+        // ESRCH = proceso ya muerto, EPERM = no podemos matarlo. Ambos no-fatales.
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'ESRCH') {
+          console.warn(`[dispatcher] kill pid=${pid} failed (${code}):`, err);
         }
-        this.childPids.clear();
-        break; // ya matamos todo, no hace falta seguir iterando tasks.
       }
     }
 
@@ -853,6 +852,23 @@ Flow id: ${failedTask.flow_id}`;
       .get(task.flow_id) as { count: number };
 
     if (incompleteTasks.count === 0) {
+      // Guardrail: no resucitar flows que ya estan en estado terminal
+      // (cancelled / failed / completed). Sin este check, cuando un usuario
+      // cancela un flow y la task `claude -p` termina naturalmente segundos
+      // despues, este path sobreescribe el `cancelled` con `completed`.
+      const currentFlow = findFlowById(this.db, task.flow_id);
+      if (
+        currentFlow &&
+        (currentFlow.status === 'cancelled' ||
+          currentFlow.status === 'failed' ||
+          currentFlow.status === 'completed')
+      ) {
+        console.log(
+          `[dispatcher] Flow ${task.flow_id} already terminal (${currentFlow.status}) — skip completion`,
+        );
+        return;
+      }
+
       const timestamp = clockNow();
       // FIX: envolver en transaccion atomica para garantizar consistencia
       this.db.transaction(() => {
@@ -954,6 +970,24 @@ Flow id: ${failedTask.flow_id}`;
     if (pendingWaiters.length > 0) {
       updateTaskStatus(this.db, taskId, 'waiting-waiter', clockNow());
       console.log(`[dispatcher] Task ${taskId} -> waiting-waiter (${pendingWaiters.length} passive waiters pending)`);
+      return;
+    }
+
+    // Gate: si el flow ya esta en estado terminal (cancelled/failed/completed),
+    // NO spawnear nuevos children. Esto pilla el caso en que el coordinator-seed
+    // termino su trabajo despues de cancelacion y dejo tasks hijas listas — sin
+    // este check, el dispatcher las pickea y arranca claude para tasks zombi.
+    const flowForGate = findFlowById(this.db, task.flow_id);
+    if (
+      flowForGate &&
+      (flowForGate.status === 'cancelled' ||
+        flowForGate.status === 'failed' ||
+        flowForGate.status === 'completed')
+    ) {
+      updateTaskStatus(this.db, taskId, 'cancelled', clockNow());
+      console.log(
+        `[dispatcher] Task ${taskId} -> cancelled (flow ${task.flow_id} already ${flowForGate.status})`,
+      );
       return;
     }
 
@@ -1114,6 +1148,13 @@ Flow id: ${failedTask.flow_id}`;
         sessionId: requestedSessionId,
         taskId: task.id,
         flowId: task.flow_id,
+        onChildSpawned: (pid: number) => {
+          try {
+            setExecutionPid(this.db, executionId, pid);
+          } catch (err) {
+            console.error(`[dispatcher] failed to persist child_pid=${pid} for execution ${executionId}:`, err);
+          }
+        },
       });
 
       // FIX #3: Trackear PID del child process
@@ -1179,50 +1220,91 @@ Flow id: ${failedTask.flow_id}`;
             `[dispatcher] Task ${taskId} → waiting-waiter (created ${pendingAfterRun.length} passive waiter(s) this turn; output preserved in execution)`,
           );
         } else {
-          // Task exitosa sin waiters pendientes → done
-          markTaskAsDone(this.db, taskId, enrichedOutput, timestamp);
+          // Guardrail: si la task fue cancelada mientras el child claude corria
+          // (ej. flow cancel via UI), NO marcar como done — eso sobreescribiria
+          // el `cancelled`. Solo registrar finishExecution para preservar el
+          // output como evidencia.
+          const currentTask = findTaskById(this.db, taskId);
+          if (currentTask && currentTask.status === 'cancelled') {
+            finishExecution(
+              this.db,
+              executionId,
+              timestamp,
+              'completed',
+              result.tokensInput ?? 0,
+              result.tokensOutput ?? 0,
+            );
+            console.log(
+              `[dispatcher] Task ${taskId} child exited but task already cancelled — keeping cancelled status`,
+            );
+          } else {
+            // Task exitosa sin waiters pendientes → done
+            markTaskAsDone(this.db, taskId, enrichedOutput, timestamp);
+
+            finishExecution(
+              this.db,
+              executionId,
+              timestamp,
+              'completed',
+              result.tokensInput ?? 0,
+              result.tokensOutput ?? 0,
+            );
+
+            // TODO(roman): persistir agent_conversations si result.sessionId y result.cost
+
+            // Log especifico para coordinator
+            if (task.agent_id === 'softwarefactory_coordinator' && result.output.includes('<<COORDINATOR_DONE:')) {
+              console.log(`[dispatcher] Coordinator plan emitted by task ${taskId}`);
+            }
+
+            console.log(`[dispatcher] Task ${taskId} → done`);
+          }
+        }
+      } else {
+        // Task fallida — pero respeta cancelled si llego antes que el exit.
+        const currentTask = findTaskById(this.db, taskId);
+        if (currentTask && currentTask.status === 'cancelled') {
+          finishExecution(
+            this.db,
+            executionId,
+            timestamp,
+            'failed',
+            result.tokensInput ?? 0,
+            result.tokensOutput ?? 0,
+          );
+          console.log(
+            `[dispatcher] Task ${taskId} child failed but task already cancelled — keeping cancelled`,
+          );
+        } else {
+          updateTaskStatus(this.db, taskId, 'failed', timestamp, result.error);
 
           finishExecution(
             this.db,
             executionId,
             timestamp,
-            'completed',
+            'failed',
             result.tokensInput ?? 0,
             result.tokensOutput ?? 0,
           );
 
-          // TODO(roman): persistir agent_conversations si result.sessionId y result.cost
-
-          // Log especifico para coordinator
-          if (task.agent_id === 'softwarefactory_coordinator' && result.output.includes('<<COORDINATOR_DONE:')) {
-            console.log(`[dispatcher] Coordinator plan emitted by task ${taskId}`);
-          }
-
-          console.log(`[dispatcher] Task ${taskId} → done`);
+          console.error(`[dispatcher] Task ${taskId} → failed: ${result.error}`);
         }
-      } else {
-        // Task fallida
-        updateTaskStatus(this.db, taskId, 'failed', timestamp, result.error);
-
-        finishExecution(
-          this.db,
-          executionId,
-          timestamp,
-          'failed',
-          result.tokensInput ?? 0,
-          result.tokensOutput ?? 0,
-        );
-
-        console.error(`[dispatcher] Task ${taskId} → failed: ${result.error}`);
       }
     } catch (err) {
       const timestamp = clockNow();
       const errorMsg = err instanceof Error ? err.message : String(err);
 
-      updateTaskStatus(this.db, taskId, 'failed', timestamp, errorMsg);
-      finishExecution(this.db, executionId, timestamp, 'failed', 0, 0);
-
-      console.error(`[dispatcher] Task ${taskId} threw exception:`, err);
+      const currentTask = findTaskById(this.db, taskId);
+      if (currentTask && currentTask.status === 'cancelled') {
+        finishExecution(this.db, executionId, timestamp, 'failed', 0, 0);
+        console.log(
+          `[dispatcher] Task ${taskId} threw but already cancelled — keeping cancelled (err: ${errorMsg})`,
+        );
+      } else {
+        updateTaskStatus(this.db, taskId, 'failed', timestamp, errorMsg);
+        finishExecution(this.db, executionId, timestamp, 'failed', 0, 0);
+        console.error(`[dispatcher] Task ${taskId} threw exception:`, err);
+      }
     }
   }
 

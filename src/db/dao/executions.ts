@@ -12,6 +12,7 @@ export interface ExecutionRow {
   status: string;
   tokens_input: number;
   tokens_output: number;
+  child_pid: number | null;
 }
 
 export interface CreateExecutionInput {
@@ -53,4 +54,31 @@ export function finishExecution(
   `);
 
   stmt.run(finished_at, status, tokens_input, tokens_output, id);
+}
+
+/**
+ * Persiste el pid del child process spawneado por el runner. Se llama JUSTO
+ * tras el spawn (no al terminar) para que cancel cross-restart funcione.
+ */
+export function setExecutionPid(db: Database.Database, id: string, child_pid: number): void {
+  db.prepare('UPDATE executions SET child_pid = ? WHERE id = ?').run(child_pid, id);
+}
+
+/**
+ * Devuelve los pids de executions activas (sin finished_at) cuyas tasks
+ * pertenecen al flow indicado. Usado por handleFlowCancelled para SIGTERM
+ * cross-restart.
+ */
+export function listRunningPidsForFlow(db: Database.Database, flow_id: string): number[] {
+  const rows = db
+    .prepare(
+      `SELECT e.child_pid AS pid
+       FROM executions e
+       JOIN tasks t ON t.id = e.task_id
+       WHERE t.flow_id = ?
+         AND e.finished_at IS NULL
+         AND e.child_pid IS NOT NULL`,
+    )
+    .all(flow_id) as Array<{ pid: number }>;
+  return rows.map((r) => r.pid);
 }
