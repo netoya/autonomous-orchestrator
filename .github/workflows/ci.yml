@@ -25,8 +25,10 @@ jobs:
       - name: Run TypeScript compiler
         run: npx tsc --noEmit
 
-      - name: Run ESLint
-        run: npm run lint
+      # ESLint pendiente de configurar (no hay .eslintrc ni script `lint` en
+      # package.json). Cuando se configure, restaurar:
+      #   - name: Run ESLint
+      #     run: npm run lint
 
   test:
     runs-on: ubuntu-latest
