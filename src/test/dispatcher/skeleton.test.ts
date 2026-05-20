@@ -208,14 +208,17 @@ describe('Dispatcher skeleton', () => {
       priority: 1,
     });
 
-    // Waiter pasivo que quedo huerfano (task ya esta done pero waiter sigue en waiting)
+    // Waiter pasivo que quedo huerfano (task ya esta done pero waiter sigue en waiting).
+    // Usamos kind='clarification' (NO 'approve-text'): los approve-text estan exceptuados
+    // del cleanup de huerfanos porque su lifecycle es desacoplado de la task que los creo
+    // (ver dispatcher.tickH comment).
     createPassiveWaiter(db, {
       id: waiterId,
       flow_id: flowId,
       task_id: taskId,
       step_id: 'orphan-approval',
-      kind: 'approve-text',
-      prompt: 'Aprobar algo',
+      kind: 'clarification',
+      prompt: 'Aclarar algo',
       schema_json: '{}',
       timeout_ms: 60000,
       created_at: timestamp - 3000,

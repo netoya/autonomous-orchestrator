@@ -973,16 +973,19 @@ Flow id: ${failedTask.flow_id}`;
       return;
     }
 
-    // Gate: si el flow ya esta en estado terminal (cancelled/failed/completed),
-    // NO spawnear nuevos children. Esto pilla el caso en que el coordinator-seed
-    // termino su trabajo despues de cancelacion y dejo tasks hijas listas — sin
-    // este check, el dispatcher las pickea y arranca claude para tasks zombi.
+    // Gate: si el flow esta DELIBERADAMENTE terminal (cancelled o failed),
+    // NO spawnear nuevos children. Pilla el caso en que el coordinator-seed
+    // termino su trabajo despues de cancelacion y dejo tasks hijas listas —
+    // sin este check, el dispatcher las pickea y arranca claude para zombis.
+    //
+    // NO incluimos 'completed' porque ese estado es DERIVADO (todas las tasks
+    // terminaron) y puede revertirse legitimamente si una task vuelve a ready
+    // (retry, fulfill de waiter, etc). Tratar completed como terminal aqui
+    // rompe ese flujo.
     const flowForGate = findFlowById(this.db, task.flow_id);
     if (
       flowForGate &&
-      (flowForGate.status === 'cancelled' ||
-        flowForGate.status === 'failed' ||
-        flowForGate.status === 'completed')
+      (flowForGate.status === 'cancelled' || flowForGate.status === 'failed')
     ) {
       updateTaskStatus(this.db, taskId, 'cancelled', clockNow());
       console.log(
