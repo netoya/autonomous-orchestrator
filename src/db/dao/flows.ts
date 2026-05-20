@@ -14,6 +14,7 @@ export interface FlowRow {
   created_at: number;
   updated_at: number;
   budget_json: string;
+  parent_flow_id: string | null;
 }
 
 export interface CreateFlowInput {
@@ -25,12 +26,13 @@ export interface CreateFlowInput {
   created_at: number;
   updated_at: number;
   budget_json?: string;
+  parent_flow_id?: string;
 }
 
 export function createFlow(db: Database.Database, input: CreateFlowInput): FlowRow {
   const stmt = db.prepare(`
-    INSERT INTO flows (id, name, version, status, autonomy, created_at, updated_at, budget_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO flows (id, name, version, status, autonomy, created_at, updated_at, budget_json, parent_flow_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   stmt.run(
@@ -41,7 +43,8 @@ export function createFlow(db: Database.Database, input: CreateFlowInput): FlowR
     input.autonomy ?? 'L3',
     input.created_at,
     input.updated_at,
-    input.budget_json ?? '{}'
+    input.budget_json ?? '{}',
+    input.parent_flow_id ?? null,
   );
 
   return findFlowById(db, input.id)!;

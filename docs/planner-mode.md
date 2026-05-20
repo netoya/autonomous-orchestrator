@@ -32,13 +32,25 @@ estos pasos:
    con `schema_json` enumerando las preguntas como JSON Schema (object con
    properties enum + required). El operador responde via `fulfillWaiter` con un
    JSON que matchea el schema.
-4. **Escribe `PLAN-PROPOSAL.md`** en `state/conversations/` (caso ambiguedad,
-   status `BLOCKED-BY-WAITER`) o **`PLAN-FINAL.md`** (caso resolved,
-   status `PLAN_READY`) con resumen ejecutivo, archivos a tocar, estructura del
-   comando, logica paso a paso, tests sugeridos y riesgos.
+4. **Escribe `PLAN-PROPOSAL-<flowId>.md`** en `state/conversations/` (caso
+   ambiguedad, status `BLOCKED-BY-WAITER`) o **`PLAN-FINAL-<flowId>.md`** (caso
+   resolved, status `PLAN_READY`) con resumen ejecutivo, archivos a tocar,
+   estructura del comando, logica paso a paso, tests sugeridos y riesgos.
+
+   **IMPORTANTE — convención de filename desde ADR-007**: el archivo DEBE
+   incluir el flowId para evitar race conditions entre flows paralelos. Los
+   paths legacy `PLAN-PROPOSAL.md` / `PLAN-FINAL.md` (sin flowId) están
+   deprecados pero soportados por `flow confirm` como fallback retrocompatible.
+
+   Para obtener tu flowId desde dentro del agente:
+   ```bash
+   sqlite3 state/orchestrator.db \
+     'SELECT flow_id FROM tasks WHERE stage = "planner-analyze" ORDER BY created_at DESC LIMIT 1'
+   ```
+
 5. **NO crea mas tasks.** El planner deja el flow en estado terminal con un
    solo entregable: el doc. Es el operador quien decide si lanza un flow nuevo
-   de implementacion (encadenado o no).
+   de implementacion (via `npx orchestrator flow confirm <flowId>` o el visor).
 
 ---
 
