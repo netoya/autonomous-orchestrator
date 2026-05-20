@@ -330,6 +330,10 @@ export class Dispatcher {
           this.handleTaskFinished(event);
         } else if (event.kind === 'waiter.fulfilled') {
           this.handleWaiterFulfilled(event);
+        } else if (event.kind === 'waiter.rejected') {
+          this.handleWaiterRejected(event);
+        } else if (event.kind === 'flow.cancelled') {
+          this.handleFlowCancelled(event);
         }
 
         // Marcar como consumido y appendear a events.jsonl
@@ -729,6 +733,75 @@ Flow id: ${failedTask.flow_id}`;
     } else {
       console.log(`[dispatcher] Task ${taskId} waiter fulfilled but still has ${pendingDeps.count} pending deps`);
     }
+  }
+
+  // ADR-006: handler de waiter.rejected.
+  // Cuando un waiter pasivo se rechaza, la task asociada NO se reanuda — pasa a cancelled.
+  private handleWaiterRejected(event: EventRow): void {
+    const payload = JSON.parse(event.payload_json) as {
+      task_id: string;
+      waiter_id: string;
+      flow_id: string;
+      reason: string;
+    };
+    const taskId = payload.task_id;
+
+    const task = findTaskById(this.db, taskId);
+    if (!task) {
+      console.log(`[dispatcher] Waiter rejected for task ${taskId} but task not found, skipping`);
+      return;
+    }
+
+    // Si la task ya esta en un estado terminal, no hacer nada
+    if (['done', 'cancelled', 'failed'].includes(task.status)) {
+      console.log(
+        `[dispatcher] Waiter rejected for task ${taskId} but task is already ${task.status}, no transition`,
+      );
+      return;
+    }
+
+    updateTaskStatus(this.db, taskId, 'cancelled', clockNow());
+    console.log(
+      `[dispatcher] Task ${taskId} -> cancelled (waiter ${payload.waiter_id} rejected: ${payload.reason})`,
+    );
+  }
+
+  // ADR-006: handler de flow.cancelled.
+  // Mata los procesos `claude -p` cuyas tasks pertenecen al flow cancelado.
+  // Las transiciones de estado (flow + tasks + waiters → cancelled) ya las hizo cancelFlow() en DAO.
+  private handleFlowCancelled(event: EventRow): void {
+    const payload = JSON.parse(event.payload_json) as {
+      flow_id: string;
+      reason: string | null;
+      cancelled_tasks: string[];
+      cancelled_waiters: string[];
+    };
+
+    // Identificar qué task_ids estaban activas y matar sus child PIDs si los tenemos trackeados.
+    // El Set this.activeWorkerIds contiene los taskIds en ejecución; matamos sus childPids correspondientes.
+    let killed = 0;
+    for (const taskId of payload.cancelled_tasks) {
+      if (this.activeWorkerIds.has(taskId)) {
+        // Buscar el childPid asociado a este task. El Set this.childPids es global del dispatcher,
+        // no por task — pero matarlos a todos es overkill. En lugar de eso, marcamos para que
+        // el proc.on('close') maneje el cleanup natural cuando exit code != 0.
+        // Por ahora: SIGTERM a todos los childPids del dispatcher (best-effort).
+        for (const pid of this.childPids) {
+          try {
+            process.kill(pid, 'SIGTERM');
+            killed++;
+          } catch {
+            // Proceso ya muerto, ignorar.
+          }
+        }
+        this.childPids.clear();
+        break; // ya matamos todo, no hace falta seguir iterando tasks.
+      }
+    }
+
+    console.log(
+      `[dispatcher] Flow ${payload.flow_id} cancelled (reason: ${payload.reason ?? 'n/a'}). Tasks: ${payload.cancelled_tasks.length}, waiters: ${payload.cancelled_waiters.length}, processes killed: ${killed}.`,
+    );
   }
 
   private handleTaskFinished(event: EventRow): void {

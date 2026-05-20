@@ -187,3 +187,94 @@ export function listPendingActiveWaiters(db: Database.Database, kind: string): W
   `);
   return stmt.all(kind) as WaiterRow[];
 }
+
+// ADR-006: lifecycle controls (cancel + reject + audit).
+
+/**
+ * Marca un waiter como `rejected` con razón obligatoria.
+ * Emite evento `waiter.rejected` distinto de `waiter.fulfilled`.
+ * El handler del dispatcher transiciona la task asociada a `cancelled`.
+ * Idempotente: si el waiter ya está en estado terminal, devuelve null sin tocar nada.
+ */
+export function rejectWaiter(
+  db: Database.Database,
+  id: string,
+  reason: string,
+  rejected_by: string,
+  rejected_at: number,
+): WaiterRow | null {
+  const waiter = findWaiterById(db, id);
+  if (!waiter) {
+    throw new Error(`Waiter ${id} not found`);
+  }
+  if (waiter.status !== 'waiting') {
+    // Idempotente: ya estaba en estado terminal, no-op.
+    return null;
+  }
+
+  const value_json = JSON.stringify({ _rejected: true, reason });
+
+  db.transaction(() => {
+    const stmt = db.prepare(`
+      UPDATE waiters
+      SET status = 'rejected', value_json = ?, fulfilled_by = ?, fulfilled_at = ?
+      WHERE id = ?
+    `);
+    stmt.run(value_json, rejected_by, rejected_at, id);
+
+    insertEvent(
+      db,
+      'waiter.rejected',
+      {
+        waiter_id: id,
+        task_id: waiter.task_id,
+        flow_id: waiter.flow_id,
+        reason,
+      },
+      rejected_at,
+    );
+  })();
+
+  return findWaiterById(db, id) ?? null;
+}
+
+/**
+ * Lista TODOS los waiters de una task (cualquier status), orden cronológico.
+ * Usado por `task waiters` (audit trail) y por el visor para mostrar el "diálogo".
+ */
+export function listWaitersForTask(db: Database.Database, task_id: string): WaiterRow[] {
+  const stmt = db.prepare(`
+    SELECT * FROM waiters
+    WHERE task_id = ?
+    ORDER BY created_at ASC
+  `);
+  return stmt.all(task_id) as WaiterRow[];
+}
+
+/**
+ * Marca todos los waiters `waiting` de un flow como `cancelled`.
+ * Usado por `cancelFlow` para el cascade.
+ * Retorna lista de IDs cancelados.
+ */
+export function cancelWaitersForFlow(
+  db: Database.Database,
+  flow_id: string,
+  cancelled_at: number,
+): string[] {
+  const waiters = db
+    .prepare(`SELECT id FROM waiters WHERE flow_id = ? AND status = 'waiting'`)
+    .all(flow_id) as Array<{ id: string }>;
+
+  if (waiters.length === 0) return [];
+
+  const stmt = db.prepare(`
+    UPDATE waiters
+    SET status = 'cancelled', fulfilled_at = ?
+    WHERE id = ?
+  `);
+  for (const { id } of waiters) {
+    stmt.run(cancelled_at, id);
+  }
+
+  return waiters.map((w) => w.id);
+}

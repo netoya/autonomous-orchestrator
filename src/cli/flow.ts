@@ -1,8 +1,7 @@
-// Subcomando: orchestrator flow create <name>
-// Crea un flow nuevo + una task placeholder.
+// Subcomando: orchestrator flow create <name> | flow cancel <id> [--reason "..."]
 
 import { openDb } from '../db/connection.js';
-import { createFlow } from '../db/dao/flows.js';
+import { createFlow, cancelFlow } from '../db/dao/flows.js';
 import { createTask } from '../db/dao/tasks.js';
 import { ulid } from '../lib/ulid.js';
 import { now } from '../lib/clock.js';
@@ -14,8 +13,46 @@ export default async function flow(args: string[]): Promise<void> {
     return flowCreate(args.slice(1));
   }
 
+  if (subcommand === 'cancel') {
+    return flowCancel(args.slice(1));
+  }
+
   console.error(`Unknown flow subcommand: ${subcommand}`);
+  console.error(`Usage: orchestrator flow create <name>`);
+  console.error(`       orchestrator flow cancel <flow-id> [--reason "..."]`);
   process.exit(1);
+}
+
+async function flowCancel(args: string[]): Promise<void> {
+  const flowId = args[0];
+  if (!flowId) {
+    console.error('Usage: orchestrator flow cancel <flow-id> [--reason "..."]');
+    process.exit(1);
+  }
+
+  // Parsear --reason
+  let reason: string | undefined;
+  const reasonIdx = args.findIndex((a) => a === '--reason');
+  if (reasonIdx >= 0) {
+    reason = args[reasonIdx + 1];
+  }
+
+  const db = openDb();
+  try {
+    const result = cancelFlow(db, flowId, { reason, cancelled_at: now() });
+
+    if (result.already_terminal) {
+      console.log(`Flow ${flowId} is already in a terminal state — no-op.`);
+      process.exit(0);
+    }
+
+    console.log(`Flow ${flowId} cancelled.`);
+    console.log(`  Reason: ${reason ?? '(none)'}`);
+    console.log(`  Tasks cancelled: ${result.cancelled_tasks.length}`);
+    console.log(`  Waiters cancelled: ${result.cancelled_waiters.length}`);
+  } finally {
+    db.close();
+  }
 }
 
 async function flowCreate(args: string[]): Promise<void> {

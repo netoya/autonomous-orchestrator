@@ -1,8 +1,8 @@
-// Subcomando: orchestrator waiter list / waiter fulfill <id> --json '{...}'
+// Subcomando: orchestrator waiter list | fulfill <id> --json '{...}' | reject <id> --reason "..."
 // Manejo de waiters pasivos.
 
 import { openDb } from '../db/connection.js';
-import { fulfillWaiter, type WaiterRow } from '../db/dao/waiters.js';
+import { fulfillWaiter, rejectWaiter, type WaiterRow } from '../db/dao/waiters.js';
 import { now } from '../lib/clock.js';
 
 export default async function waiter(args: string[]): Promise<void> {
@@ -16,8 +16,51 @@ export default async function waiter(args: string[]): Promise<void> {
     return waiterFulfill(args.slice(1));
   }
 
+  if (subcommand === 'reject') {
+    return waiterReject(args.slice(1));
+  }
+
   console.error(`Unknown waiter subcommand: ${subcommand}`);
+  console.error(`Usage: orchestrator waiter list [--pending]`);
+  console.error(`       orchestrator waiter fulfill <id> --json '{...}'`);
+  console.error(`       orchestrator waiter reject <id> --reason "..."`);
   process.exit(1);
+}
+
+async function waiterReject(args: string[]): Promise<void> {
+  const waiterId = args[0];
+  if (!waiterId) {
+    console.error('Usage: orchestrator waiter reject <id> --reason "..."');
+    process.exit(1);
+  }
+
+  // Parsear --reason (obligatorio)
+  let reason: string | undefined;
+  const reasonIdx = args.findIndex((a) => a === '--reason');
+  if (reasonIdx >= 0) {
+    reason = args[reasonIdx + 1];
+  }
+
+  if (!reason || reason.trim().length === 0) {
+    console.error('Error: --reason is required and cannot be empty');
+    process.exit(1);
+  }
+
+  const db = openDb();
+  try {
+    const result = rejectWaiter(db, waiterId, reason, 'cli-operator', now());
+
+    if (!result) {
+      console.log(`Waiter ${waiterId} is already in a terminal state — no-op.`);
+      process.exit(0);
+    }
+
+    console.log(`Waiter ${waiterId} rejected.`);
+    console.log(`  Reason: ${reason}`);
+    console.log(`  Task ${result.task_id} will be transitioned to cancelled by dispatcher.`);
+  } finally {
+    db.close();
+  }
 }
 
 async function waiterList(args: string[]): Promise<void> {

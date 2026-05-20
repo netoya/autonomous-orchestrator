@@ -1,8 +1,8 @@
-// Subcomando: orchestrator task list [--status=X]
-// Lista tasks con filtro opcional por status.
+// Subcomando: orchestrator task list [--status=X] | task waiters <id> [--status <s>] [--json]
 
 import { openDb } from '../db/connection.js';
-import type { TaskRow } from '../db/dao/tasks.js';
+import { findTaskById, type TaskRow } from '../db/dao/tasks.js';
+import { listWaitersForTask } from '../db/dao/waiters.js';
 
 export default async function task(args: string[]): Promise<void> {
   const subcommand = args[0];
@@ -11,8 +11,75 @@ export default async function task(args: string[]): Promise<void> {
     return taskList(args.slice(1));
   }
 
+  if (subcommand === 'waiters') {
+    return taskWaiters(args.slice(1));
+  }
+
   console.error(`Unknown task subcommand: ${subcommand}`);
+  console.error(`Usage: orchestrator task list [--status=X]`);
+  console.error(`       orchestrator task waiters <task-id> [--status <s>] [--json]`);
   process.exit(1);
+}
+
+async function taskWaiters(args: string[]): Promise<void> {
+  const taskId = args[0];
+  if (!taskId) {
+    console.error('Usage: orchestrator task waiters <task-id> [--status <s>] [--json]');
+    process.exit(1);
+  }
+
+  // Parsear --status (multi) y --json
+  const statusFilters: string[] = [];
+  let asJson = false;
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === '--json') asJson = true;
+    if (args[i] === '--status' && args[i + 1]) {
+      statusFilters.push(args[i + 1]!);
+      i++;
+    }
+  }
+
+  const db = openDb();
+  try {
+    const found = findTaskById(db, taskId);
+    if (!found) {
+      console.error(`Task ${taskId} not found`);
+      process.exit(1);
+    }
+
+    let waiters = listWaitersForTask(db, taskId);
+    if (statusFilters.length > 0) {
+      waiters = waiters.filter((w) => statusFilters.includes(w.status));
+    }
+
+    if (asJson) {
+      console.log(JSON.stringify(waiters, null, 2));
+      return;
+    }
+
+    if (waiters.length === 0) {
+      console.log(`no waiters for task ${taskId}`);
+      return;
+    }
+
+    console.log(
+      'STEP_ID                | KIND             | MODE    | STATUS     | CREATED             | VALUE (truncated)',
+    );
+    console.log(
+      '------------------------------------------------------------------------------------------------------------',
+    );
+    for (const w of waiters) {
+      const step = w.step_id.slice(0, 22).padEnd(22);
+      const kind = w.kind.slice(0, 16).padEnd(16);
+      const mode = w.mode.padEnd(7);
+      const status = w.status.padEnd(10);
+      const created = new Date(w.created_at).toISOString().slice(0, 19);
+      const valueShort = (w.value_json ?? '').slice(0, 40);
+      console.log(`${step} | ${kind} | ${mode} | ${status} | ${created} | ${valueShort}`);
+    }
+  } finally {
+    db.close();
+  }
 }
 
 async function taskList(args: string[]): Promise<void> {
