@@ -1086,26 +1086,47 @@ Flow id: ${failedTask.flow_id}`;
         // FIX #2.2: Persistir session_action en output_json para telemetria SQL
         const enrichedOutput = this.enrichOutputWithSessionAction(result.output, sessionAction);
 
-        // Task exitosa → done
-        markTaskAsDone(this.db, taskId, enrichedOutput, timestamp);
+        // FIX #4 (waiter-loop nativo): si el agente CREO waiters pasivos durante su turno,
+        // la task no debe marcarse como done — debe pasar a waiting-waiter. El dispatcher
+        // la re-invocara via --resume cuando el operador fulfill cada waiter. Sin esto,
+        // el patron prepare/refine en multiples rondas no funciona porque la task se
+        // cierra antes de poder iterar.
+        const pendingAfterRun = listPassiveWaitersForTask(this.db, taskId);
+        if (pendingAfterRun.length > 0) {
+          updateTaskStatus(this.db, taskId, 'waiting-waiter', timestamp);
+          finishExecution(
+            this.db,
+            executionId,
+            timestamp,
+            'completed',
+            result.tokensInput ?? 0,
+            result.tokensOutput ?? 0,
+          );
+          console.log(
+            `[dispatcher] Task ${taskId} → waiting-waiter (created ${pendingAfterRun.length} passive waiter(s) this turn; output preserved in execution)`,
+          );
+        } else {
+          // Task exitosa sin waiters pendientes → done
+          markTaskAsDone(this.db, taskId, enrichedOutput, timestamp);
 
-        finishExecution(
-          this.db,
-          executionId,
-          timestamp,
-          'completed',
-          result.tokensInput ?? 0,
-          result.tokensOutput ?? 0,
-        );
+          finishExecution(
+            this.db,
+            executionId,
+            timestamp,
+            'completed',
+            result.tokensInput ?? 0,
+            result.tokensOutput ?? 0,
+          );
 
-        // TODO(roman): persistir agent_conversations si result.sessionId y result.cost
+          // TODO(roman): persistir agent_conversations si result.sessionId y result.cost
 
-        // Log especifico para coordinator
-        if (task.agent_id === 'softwarefactory_coordinator' && result.output.includes('<<COORDINATOR_DONE:')) {
-          console.log(`[dispatcher] Coordinator plan emitted by task ${taskId}`);
+          // Log especifico para coordinator
+          if (task.agent_id === 'softwarefactory_coordinator' && result.output.includes('<<COORDINATOR_DONE:')) {
+            console.log(`[dispatcher] Coordinator plan emitted by task ${taskId}`);
+          }
+
+          console.log(`[dispatcher] Task ${taskId} → done`);
         }
-
-        console.log(`[dispatcher] Task ${taskId} → done`);
       } else {
         // Task fallida
         updateTaskStatus(this.db, taskId, 'failed', timestamp, result.error);

@@ -38,8 +38,9 @@ state/logs/*.log
 state/logs/*.out
 state/logs/*.err
 
-# State runtime — conversations and events
-state/conversations/*.jsonl
+# State runtime — conversations and events (jsonl streams + planner *.md artifacts)
+state/conversations/*
+!state/conversations/.gitkeep
 
 # State runtime — inbox/outbox (ephemeral inputs)
 state/inbox/*.input
