@@ -19,7 +19,9 @@ import {
   listPassiveWaitersForTask,
   listPendingActiveWaiters,
   fulfillWaiter,
+  findWaiterById,
 } from './db/dao/waiters.js';
+import { spawn as spawnProc } from 'node:child_process';
 import { executeCommand } from './dispatcher/exec-runner.js';
 import {
   findFlowById,
@@ -691,6 +693,16 @@ Flow id: ${failedTask.flow_id}`;
     const payload = JSON.parse(event.payload_json) as { task_id: string; waiter_id: string };
     const taskId = payload.task_id;
 
+    // ADR-008: si el waiter fulfilled es kind='approve-plan', el dispatcher
+    // dispara automaticamente flow confirm o flow cancel segun el value.action.
+    // La task planner se marca done (su trabajo termino — escribir plan +
+    // crear waiter) y NO se transiciona a ready.
+    const waiter = findWaiterById(this.db, payload.waiter_id);
+    if (waiter && waiter.kind === 'approve-plan') {
+      this.handleApprovePlanFulfilled(waiter, taskId);
+      return;
+    }
+
     // FIX: Chequear estado actual de la task antes de transicionar
     const task = findTaskById(this.db, taskId);
     if (!task) {
@@ -766,6 +778,69 @@ Flow id: ${failedTask.flow_id}`;
     console.log(
       `[dispatcher] Task ${taskId} -> cancelled (waiter ${payload.waiter_id} rejected: ${payload.reason})`,
     );
+  }
+
+  // ADR-008: handler especifico para waiter kind='approve-plan'.
+  // El value_json del fulfill define la accion:
+  //   {action: 'confirm'} -> spawnea `npx orchestrator flow confirm <flow_id>` (ADR-007)
+  //   {action: 'reject', notes?} -> spawnea `npx orchestrator flow cancel <flow_id> --reason ...`
+  // La task planner queda como done (su trabajo termino al escribir plan + crear waiter).
+  // Idempotente: si la task ya esta en terminal o el CLI ya ejecuto, no-op.
+  private handleApprovePlanFulfilled(waiter: { id: string; flow_id: string; value_json: string | null }, taskId: string): void {
+    const task = findTaskById(this.db, taskId);
+    if (!task) {
+      console.log(`[dispatcher] approve-plan ${waiter.id}: task ${taskId} not found, skipping`);
+      return;
+    }
+    if (['done', 'cancelled', 'failed'].includes(task.status)) {
+      console.log(`[dispatcher] approve-plan ${waiter.id}: task already ${task.status}, no-op`);
+      return;
+    }
+
+    let action: 'confirm' | 'reject' = 'confirm';
+    let notes = '';
+    try {
+      const value = JSON.parse(waiter.value_json ?? '{}') as { action?: string; notes?: string };
+      if (value.action === 'reject') action = 'reject';
+      notes = value.notes ?? '';
+    } catch (err) {
+      console.error(`[dispatcher] approve-plan ${waiter.id}: invalid value_json, defaulting to confirm:`, err);
+    }
+
+    // Cierre de la task planner segun la accion. CONFIRM: marcar done (trabajo
+    // completado). REJECT: marcar cancelled — semantica fiel (el planner fue
+    // rechazado) y evita que el trigger task.finished promueva el flow a
+    // completed antes de que el spawn de `flow cancel` se ejecute.
+    const closeAt = clockNow();
+    if (action === 'confirm') {
+      markTaskAsDone(this.db, taskId, JSON.stringify({ approve_plan: { action, notes } }), closeAt);
+    } else {
+      updateTaskStatus(this.db, taskId, 'cancelled', closeAt);
+    }
+    console.log(`[dispatcher] approve-plan ${waiter.id} action=${action} flow=${waiter.flow_id}`);
+
+    // Spawn CLI fire-and-forget. Los eventos de creacion/cancel del flow llegan via tick normal.
+    const cliArgs =
+      action === 'confirm'
+        ? ['orchestrator', 'flow', 'confirm', waiter.flow_id]
+        : ['orchestrator', 'flow', 'cancel', waiter.flow_id, '--reason', `rejected by operator: ${notes}`];
+
+    const child = spawnProc('npx', cliArgs, {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false,
+    });
+    child.on('error', (err) => {
+      console.error(`[dispatcher] approve-plan ${action} spawn failed:`, err);
+    });
+    child.on('close', (code) => {
+      if (code !== 0) {
+        console.error(`[dispatcher] approve-plan ${action} exited with code ${code}`);
+      } else {
+        console.log(`[dispatcher] approve-plan ${action} completed for flow ${waiter.flow_id}`);
+      }
+    });
   }
 
   // ADR-006: handler de flow.cancelled.

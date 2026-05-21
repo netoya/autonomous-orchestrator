@@ -106,13 +106,22 @@ PROMPT:
 4. DOS caminos:
 
    CAMINO A — Si SIN ambiguedad:
-   - Write a <project-root>/state/conversations/PLAN-PROPOSAL.md con:
+   - Write a <project-root>/state/conversations/PLAN-FINAL-<flowId>.md con:
      - Status: PLAN_READY
      - Resumen ejecutivo (5-8 lineas)
      - Repo destino + archivos exactos a tocar
      - Forma del entregable (args, flags, output)
      - Tests sugeridos
-   - Termina con mensaje 'PLAN_READY — pronto para confirmacion del operador'.
+   - Crea el waiter de aprobacion final (ADR-008):
+       npx tsx <orchestrator-root>/src/coordinator/cli-tools.ts createWaiter \\
+         --flow-id $FLOW_ID \\
+         --task-slug planner-analyze \\
+         --step-id approve-plan-1 \\
+         --kind approve-plan \\
+         --prompt 'Plan PLAN_READY. Responde {action:"confirm"} para arrancar flow ejecutor, o {action:"reject", notes:"..."} para cancelar.' \\
+         --schema-json '{"type":"object","properties":{"action":{"type":"string","enum":["confirm","reject"]},"notes":{"type":"string"}},"required":["action"]}' \\
+         --timeout-ms 604800000
+   - Termina con mensaje 'PLAN_READY — esperando aprobacion (waiter approve-plan)'.
 
    CAMINO B — Si CON ambiguedad (esperado):
    - Crea UN waiter pasivo con Bash:
@@ -189,7 +198,7 @@ Ya tienes las respuestas:
 Tu trabajo:
 1. Lee los archivos relevantes para conocer el patron actual.
 
-2. Escribe Write <project-root>/state/conversations/PLAN-FINAL.md con:
+2. Escribe Write <project-root>/state/conversations/PLAN-FINAL-<flowId>.md con:
 
    ## Plan firme — <titulo>
 
@@ -220,8 +229,17 @@ Tu trabajo:
    ---
    PLAN_READY.
 
-3. NO crear tasks adicionales. NO crear waiters. NO ejecutar nada.
-4. Termina con: 'PLAN_READY — pronto para confirmacion'."
+3. Crea el waiter de aprobacion final (ADR-008):
+     npx tsx <orchestrator-root>/src/coordinator/cli-tools.ts createWaiter \\
+       --flow-id $FLOW_ID \\
+       --task-slug planner-finalize \\
+       --step-id approve-plan-1 \\
+       --kind approve-plan \\
+       --prompt 'Plan PLAN_READY. Responde {action:"confirm"} para arrancar flow ejecutor, o {action:"reject", notes:"..."} para cancelar.' \\
+       --schema-json '{"type":"object","properties":{"action":{"type":"string","enum":["confirm","reject"]},"notes":{"type":"string"}},"required":["action"]}' \\
+       --timeout-ms 604800000
+4. NO crear tasks adicionales. NO crear MAS waiters. NO ejecutar nada.
+5. Termina con: 'PLAN_READY — esperando aprobacion (waiter approve-plan)'."
 
 ------------------------------------------------------------
 
@@ -235,11 +253,48 @@ Cuando termines: <<COORDINATOR_DONE: 1 task planner-finalize creada>>
 Ambos docs se escriben en `state/conversations/` con un prefijo opcional que
 identifica el lineage (ej: `EXPERIMENT-`, `<feature-name>-`).
 
-| Archivo                   | Cuando                              | Frontmatter / primera linea       |
-| ------------------------- | ----------------------------------- | --------------------------------- |
-| `PLAN-PROPOSAL.md`        | Iteracion con ambiguedades          | `**Status:** BLOCKED-BY-WAITER`   |
-| `PLAN-PROPOSAL.md`        | Iteracion sin ambiguedades          | `**Status:** PLAN_READY`          |
-| `PLAN-FINAL.md`           | Tras fulfill del waiter (re-plan)   | `**Status:** PLAN_READY`          |
+Desde ADR-007 los archivos incluyen `flowId` para evitar race conditions entre
+flows paralelos. Los nombres legacy (sin flowId) son soportados por el CLI
+`flow confirm` como fallback retrocompatible.
+
+| Archivo                                  | Cuando                              | Frontmatter / primera linea       |
+| ---------------------------------------- | ----------------------------------- | --------------------------------- |
+| `PLAN-PROPOSAL-<flowId>.md`              | Iteracion con ambiguedades          | `**Status:** BLOCKED-BY-WAITER`   |
+| `PLAN-FINAL-<flowId>.md`                 | Plan firme (con o sin clarification) | `**Status:** PLAN_READY`          |
+
+---
+
+## Waiter `approve-plan` (ADR-008)
+
+Cuando el plan llega a `PLAN_READY` (camino A directo o B tras clarification),
+Roman crea un waiter pasivo `kind=approve-plan` antes de terminar su turno. La
+task queda en `waiting-waiter` (no `done`), el flow queda `running` (no
+`completed`).
+
+**Schema del waiter:**
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "action": {"type": "string", "enum": ["confirm", "reject"]},
+    "notes":  {"type": "string"}
+  },
+  "required": ["action"]
+}
+```
+
+**Que pasa al fulfill:**
+
+- `{action: "confirm"}` → el dispatcher spawnea `npx orchestrator flow confirm
+  <flowId>` (ADR-007). Se crea el flow ejecutor con `parent_flow_id`.
+- `{action: "reject", notes?}` → el dispatcher spawnea `npx orchestrator flow
+  cancel <flowId> --reason "rejected by operator: <notes>"` (ADR-006).
+
+**Beneficio sobre el botón Confirm efímero anterior:** el approve-plan es
+persistente (sobrevive a refresh del visor / cierre de pestaña / otro
+dispositivo), aparece en el banner global `waiters: N` y queda auditado con
+`fulfilled_by`/`fulfilled_at`/`value_json`.
 
 **Campos minimos que el consumidor parsea de los docs:**
 
